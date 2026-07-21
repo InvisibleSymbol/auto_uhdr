@@ -73,7 +73,7 @@ func gainmapHdrgmXMP(m gainmap.Metadata) string {
 		fmt.Fprintf(&b, `hdrgm:HDRCapacityMax="%s">`, g(m.CapacityMax))
 		seq := func(name string, vals [3]float64) {
 			b.WriteString(`<hdrgm:` + name + `><rdf:Seq>`)
-			for c := 0; c < 3; c++ {
+			for c := range 3 {
 				b.WriteString(`<rdf:li>` + g(vals[c]) + `</rdf:li>`)
 			}
 			b.WriteString(`</rdf:Seq></hdrgm:` + name + `>`)

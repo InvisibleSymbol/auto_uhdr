@@ -1,10 +1,48 @@
 package hdrbuild
 
 import (
+	"math"
 	"testing"
 
 	"github.com/invis/arw2uhdr/internal/imaging"
 )
+
+// TestGoldenCurveV10 locks the tuned default rendition ("v10"). The expected
+// outputs were captured from the validated build; a change here means the default
+// HDR look moved, which must be a deliberate, reviewed decision — not a silent
+// side effect of a refactor. Regenerate intentionally if the curve is retuned.
+func TestGoldenCurveV10(t *testing.T) {
+	const W, H = 256, 4
+	sdr := imaging.New(W, H)
+	raw := imaging.New(W, H)
+	for y := range H {
+		for x := range W {
+			v := float32(x) / float32(W-1)
+			i := (y*W + x) * 3
+			for c := range 3 {
+				sdr.Pix[i+c] = v
+				raw.Pix[i+c] = v
+			}
+		}
+	}
+	hdr, k := Build(sdr, raw, DefaultOptions())
+	if k != [3]float64{1, 1, 1} {
+		t.Fatalf("anchor gains drifted for raw==sdr: %v", k)
+	}
+	golden := []struct {
+		x    int
+		want float32
+	}{
+		{25, 0.098039}, {76, 0.298039}, {128, 0.951051}, {166, 1.841251},
+		{217, 2.406936}, {238, 2.639865}, {253, 2.806243},
+	}
+	for _, g := range golden {
+		got := hdr.Pix[g.x*3]
+		if math.Abs(float64(got-g.want)) > 1e-4 {
+			t.Errorf("curve moved at x=%d: got %.6f want %.6f", g.x, got, g.want)
+		}
+	}
+}
 
 // fill makes a uniform SDR and a matching RAW (so anchor k≈1), at a given luma.
 func pair(luma float32) (*imaging.Image, *imaging.Image) {
