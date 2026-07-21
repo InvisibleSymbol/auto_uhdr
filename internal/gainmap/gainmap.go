@@ -15,9 +15,12 @@
 package gainmap
 
 import (
+	"errors"
 	"math"
+	"sync"
 
 	"github.com/invis/arw2uhdr/internal/imaging"
+	"github.com/invis/arw2uhdr/internal/xmath"
 )
 
 // sRGB/BT.709 luminance weights.
@@ -27,14 +30,17 @@ const (
 	lumB = 0.0722
 )
 
+// ErrDimMismatch is returned when the SDR and HDR images differ in size.
+var ErrDimMismatch = errors.New("gainmap: sdr and hdr dimensions differ")
+
 // Options controls gain-map computation.
 type Options struct {
-	MultiChannel bool    // true: 3-channel (RGB) gain map; false: single-channel (luminance)
+	MultiChannel  bool    // true: 3-channel (RGB) gain map; false: single-channel (luminance)
 	MaxBoostStops float64 // cap on max content boost, in stops (log2). 0 => derive from data
-	Gamma        float64 // map gamma (>0), default 1.0
-	OffsetSDR    float64 // default 1/64
-	OffsetHDR    float64 // default 1/64
-	ScaleFactor  int     // downsample factor per dimension (>=1), default 1
+	Gamma         float64 // map gamma (>0), default 1.0
+	OffsetSDR     float64 // default 1/64
+	OffsetHDR     float64 // default 1/64
+	ScaleFactor   int     // downsample factor per dimension (>=1), default 1
 	// SmoothFrac low-pass filters the gain map by ~this fraction of the gain-map width. A gain map
 	// must be low-frequency (a smooth boost; the SDR carries the detail) or per-pixel gain
 	// discontinuities at edges produce halo/ringing artifacts when boosted. Default ~0.0025.
@@ -73,20 +79,10 @@ func lum(r, g, b float32) float64 {
 	return lumR*float64(r) + lumG*float64(g) + lumB*float64(b)
 }
 
-func clamp01(x float64) float64 {
-	if x < 0 {
-		return 0
-	}
-	if x > 1 {
-		return 1
-	}
-	return x
-}
-
 // Compute builds the gain map + metadata from SDR-linear and HDR-linear images (same dimensions).
 func Compute(sdr, hdr *imaging.Image, o Options) (*GainMap, Metadata, error) {
 	if sdr.W != hdr.W || sdr.H != hdr.H {
-		return nil, Metadata{}, errDim
+		return nil, Metadata{}, ErrDimMismatch
 	}
 	if o.Gamma <= 0 {
 		o.Gamma = 1.0
@@ -95,50 +91,47 @@ func Compute(sdr, hdr *imaging.Image, o Options) (*GainMap, Metadata, error) {
 		o.ScaleFactor = 1
 	}
 	W, H := sdr.W, sdr.H
-
-	// Pass 1: find max observed gain (per channel) to set maxLog2.
-	var maxObs [3]float64
-	sample := func(fn func(sg, hg float64, c int)) {
-		for y := 0; y < H; y++ {
-			for x := 0; x < W; x++ {
-				i := (y*W + x) * 3
-				if o.MultiChannel {
-					for c := 0; c < 3; c++ {
-						s := float64(sdr.Pix[i+c])
-						h := float64(hdr.Pix[i+c])
-						fn(s, h, c)
-					}
-				} else {
-					s := lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2])
-					h := lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2])
-					fn(s, h, 0)
-				}
-			}
-		}
-	}
-	sample(func(s, h float64, c int) {
-		g := math.Log2((h + o.OffsetHDR) / (s + o.OffsetSDR))
-		if g > maxObs[c] {
-			maxObs[c] = g
-		}
-	})
-
-	// minLog2 = 0 (HDR >= SDR in highlight-recovery); maxLog2 = min(observed, cap).
-	cap := o.MaxBoostStops
-	var meta Metadata
-	meta.MultiChannel = o.MultiChannel
 	nCh := 1
 	if o.MultiChannel {
 		nCh = 3
 	}
-	for c := 0; c < 3; c++ {
+
+	// Pass 1: find the max observed gain (per channel) to set maxLog2. Rows split
+	// across cores; each band folds into a local max merged once at the end.
+	var maxObs [3]float64
+	var mu sync.Mutex
+	imaging.ParallelRows(H, func(y0, y1 int) {
+		var localMax [3]float64
+		for p := y0 * W; p < y1*W; p++ {
+			i := p * 3
+			if o.MultiChannel {
+				for c := range 3 {
+					g := math.Log2((float64(hdr.Pix[i+c]) + o.OffsetHDR) / (float64(sdr.Pix[i+c]) + o.OffsetSDR))
+					localMax[c] = max(localMax[c], g)
+				}
+			} else {
+				g := math.Log2((lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2]) + o.OffsetHDR) /
+					(lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2]) + o.OffsetSDR))
+				localMax[0] = max(localMax[0], g)
+			}
+		}
+		mu.Lock()
+		for c := range 3 {
+			maxObs[c] = max(maxObs[c], localMax[c])
+		}
+		mu.Unlock()
+	})
+
+	// minLog2 = 0 (HDR >= SDR in highlight-recovery); maxLog2 = min(observed, cap).
+	boostCap := o.MaxBoostStops
+	var meta Metadata
+	meta.MultiChannel = o.MultiChannel
+	for c := range 3 {
 		mx := maxObs[c]
-		if cap > 0 && mx > cap {
-			mx = cap
+		if boostCap > 0 {
+			mx = min(mx, boostCap)
 		}
-		if mx < 1e-6 {
-			mx = 1e-6 // avoid zero range
-		}
+		mx = max(mx, 1e-6) // avoid a zero range
 		meta.MinLog2[c] = 0
 		meta.MaxLog2[c] = mx
 		meta.Gamma[c] = o.Gamma
@@ -146,134 +139,80 @@ func Compute(sdr, hdr *imaging.Image, o Options) (*GainMap, Metadata, error) {
 		meta.OffsetHDR[c] = o.OffsetHDR
 	}
 	meta.CapacityMin = 0
-	meta.CapacityMax = math.Max(meta.MaxLog2[0], math.Max(meta.MaxLog2[1], meta.MaxLog2[2]))
-	meta.BaseIsHDR = false
+	meta.CapacityMax = max(meta.MaxLog2[0], meta.MaxLog2[1], meta.MaxLog2[2])
 
-	// Pass 2: encode (with optional integer box downsample).
+	// Pass 2: encode (with optional integer box downsample). Output rows are disjoint.
 	sf := o.ScaleFactor
 	gw := (W + sf - 1) / sf
 	gh := (H + sf - 1) / sf
 	gm := &GainMap{W: gw, H: gh, Channels: nCh, Pix: make([]uint8, gw*gh*nCh)}
 
-	encodeChan := func(s, h float64, c int) uint8 {
+	encodeChan := func(s, h float64, c int) float64 {
 		g := math.Log2((h + o.OffsetHDR) / (s + o.OffsetSDR))
-		rng := meta.MaxLog2[c] - meta.MinLog2[c]
-		lr := (g - meta.MinLog2[c]) / rng
-		v := math.Pow(clamp01(lr), o.Gamma)
-		return uint8(v*255 + 0.5)
+		lr := (g - meta.MinLog2[c]) / (meta.MaxLog2[c] - meta.MinLog2[c])
+		return math.Pow(xmath.Clamp01(lr), o.Gamma) * 255
 	}
 
-	for gy := 0; gy < gh; gy++ {
-		for gx := 0; gx < gw; gx++ {
-			// average the sf×sf source block
-			var acc [3]float64
-			var cnt float64
-			for dy := 0; dy < sf; dy++ {
-				sy := gy*sf + dy
-				if sy >= H {
-					break
-				}
-				for dx := 0; dx < sf; dx++ {
-					sx := gx*sf + dx
-					if sx >= W {
+	imaging.ParallelRows(gh, func(gy0, gy1 int) {
+		for gy := gy0; gy < gy1; gy++ {
+			for gx := range gw {
+				var acc [3]float64
+				var cnt float64
+				for dy := range sf {
+					sy := gy*sf + dy
+					if sy >= H {
 						break
 					}
-					i := (sy*W + sx) * 3
-					if o.MultiChannel {
-						for c := 0; c < 3; c++ {
-							acc[c] += float64(encodeChan(float64(sdr.Pix[i+c]), float64(hdr.Pix[i+c]), c))
+					for dx := range sf {
+						sx := gx*sf + dx
+						if sx >= W {
+							break
 						}
-					} else {
-						s := lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2])
-						hh := lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2])
-						acc[0] += float64(encodeChan(s, hh, 0))
+						i := (sy*W + sx) * 3
+						if o.MultiChannel {
+							for c := range 3 {
+								acc[c] += encodeChan(float64(sdr.Pix[i+c]), float64(hdr.Pix[i+c]), c)
+							}
+						} else {
+							acc[0] += encodeChan(
+								lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2]),
+								lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2]), 0)
+						}
+						cnt++
 					}
-					cnt++
+				}
+				gi := (gy*gw + gx) * nCh
+				for c := range nCh {
+					gm.Pix[gi+c] = uint8(acc[c]/cnt + 0.5)
 				}
 			}
-			gi := (gy*gw + gx) * nCh
-			for c := 0; c < nCh; c++ {
-				gm.Pix[gi+c] = uint8(acc[c]/cnt + 0.5)
-			}
 		}
-	}
+	})
 
-	// Low-pass the gain map so it is a smooth boost (removes edge halos/ringing).
+	// Low-pass the gain map so it stays a smooth boost (removes edge halos/ringing).
 	if o.SmoothFrac > 0 {
-		radius := int(o.SmoothFrac*float64(gw) + 0.5)
-		blurGainMap(gm, radius)
+		blurGainMap(gm, int(o.SmoothFrac*float64(gw)+0.5))
 	}
 	return gm, meta, nil
 }
 
-// blurGainMap applies a 3-pass separable box blur (≈ Gaussian) to each channel in place.
+// blurGainMap applies a 3-fold separable box blur (≈ Gaussian) to each channel in place,
+// reusing the shared imaging.BoxBlurF.
 func blurGainMap(gm *GainMap, radius int) {
 	if radius < 1 {
 		return
 	}
 	w, h, ch := gm.W, gm.H, gm.Channels
-	buf := make([]float64, w*h)
-	for c := 0; c < ch; c++ {
-		for i := 0; i < w*h; i++ {
-			buf[i] = float64(gm.Pix[i*ch+c])
+	plane := make([]float64, w*h)
+	for c := range ch {
+		for i := range w * h {
+			plane[i] = float64(gm.Pix[i*ch+c])
 		}
-		for it := 0; it < 3; it++ {
-			buf = boxBlurH(buf, w, h, radius)
-			buf = boxBlurV(buf, w, h, radius)
-		}
-		for i := 0; i < w*h; i++ {
-			v := buf[i] + 0.5
-			if v < 0 {
-				v = 0
-			} else if v > 255 {
-				v = 255
-			}
-			gm.Pix[i*ch+c] = uint8(v)
+		blurred := imaging.BoxBlurF(plane, w, h, radius, 3)
+		for i := range w * h {
+			gm.Pix[i*ch+c] = uint8(xmath.Clamp(blurred[i]+0.5, 0, 255))
 		}
 	}
-}
-
-func clampi(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-func boxBlurH(src []float64, w, h, r int) []float64 {
-	dst := make([]float64, w*h)
-	win := float64(2*r + 1)
-	for y := 0; y < h; y++ {
-		row := y * w
-		var sum float64
-		for x := -r; x <= r; x++ {
-			sum += src[row+clampi(x, 0, w-1)]
-		}
-		for x := 0; x < w; x++ {
-			dst[row+x] = sum / win
-			sum += src[row+clampi(x+r+1, 0, w-1)] - src[row+clampi(x-r, 0, w-1)]
-		}
-	}
-	return dst
-}
-
-func boxBlurV(src []float64, w, h, r int) []float64 {
-	dst := make([]float64, w*h)
-	win := float64(2*r + 1)
-	for x := 0; x < w; x++ {
-		var sum float64
-		for y := -r; y <= r; y++ {
-			sum += src[clampi(y, 0, h-1)*w+x]
-		}
-		for y := 0; y < h; y++ {
-			dst[y*w+x] = sum / win
-			sum += src[clampi(y+r+1, 0, h-1)*w+x] - src[clampi(y-r, 0, h-1)*w+x]
-		}
-	}
-	return dst
 }
 
 // Reconstruct rebuilds an HDR-linear image from an SDR-linear image + gain map + metadata,
@@ -282,41 +221,34 @@ func boxBlurV(src []float64, w, h, r int) []float64 {
 func Reconstruct(sdr *imaging.Image, gm *GainMap, meta Metadata, weight float64) *imaging.Image {
 	W, H := sdr.W, sdr.H
 	out := imaging.New(W, H)
-	for y := 0; y < H; y++ {
-		gy := y * gm.H / H
-		for x := 0; x < W; x++ {
-			gx := x * gm.W / W
-			i := (y*W + x) * 3
-			gi := (gy*gm.W + gx) * gm.Channels
-			for c := 0; c < 3; c++ {
-				var enc float64
-				if gm.Channels == 3 {
-					enc = float64(gm.Pix[gi+c]) / 255.0
-				} else {
-					enc = float64(gm.Pix[gi]) / 255.0
+	imaging.ParallelRows(H, func(y0, y1 int) {
+		for y := y0; y < y1; y++ {
+			gy := y * gm.H / H
+			for x := range W {
+				gx := x * gm.W / W
+				i := (y*W + x) * 3
+				gi := (gy*gm.W + gx) * gm.Channels
+				for c := range 3 {
+					ci, gj := c, gi+c
+					if gm.Channels == 1 {
+						ci, gj = 0, gi
+					}
+					enc := float64(gm.Pix[gj]) / 255.0
+					lr := math.Pow(enc, 1.0/meta.Gamma[ci])
+					logBoost := meta.MinLog2[ci]*(1-lr) + meta.MaxLog2[ci]*lr
+					h := (float64(sdr.Pix[i+c])+meta.OffsetSDR[ci])*math.Exp2(logBoost*weight) - meta.OffsetHDR[ci]
+					out.Pix[i+c] = float32(max(h, 0))
 				}
-				ci := c
-				if gm.Channels == 1 {
-					ci = 0
-				}
-				lr := math.Pow(enc, 1.0/meta.Gamma[ci])
-				logBoost := meta.MinLog2[ci]*(1-lr) + meta.MaxLog2[ci]*lr
-				s := float64(sdr.Pix[i+c])
-				h := (s+meta.OffsetSDR[ci])*math.Exp2(logBoost*weight) - meta.OffsetHDR[ci]
-				if h < 0 {
-					h = 0
-				}
-				out.Pix[i+c] = float32(h)
 			}
 		}
-	}
+	})
 	return out
 }
 
 // ToImage renders the gain map as a viewable image (single-channel replicated to gray).
 func (gm *GainMap) ToImage() *imaging.Image {
 	im := imaging.New(gm.W, gm.H)
-	for p := 0; p < gm.W*gm.H; p++ {
+	for p := range gm.W * gm.H {
 		if gm.Channels == 3 {
 			im.Pix[p*3] = float32(gm.Pix[p*3]) / 255
 			im.Pix[p*3+1] = float32(gm.Pix[p*3+1]) / 255
@@ -328,9 +260,3 @@ func (gm *GainMap) ToImage() *imaging.Image {
 	}
 	return im
 }
-
-var errDim = dimErr("sdr and hdr dimensions differ")
-
-type dimErr string
-
-func (e dimErr) Error() string { return string(e) }

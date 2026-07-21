@@ -5,7 +5,7 @@ import "encoding/binary"
 // mpfFields records byte offsets (within the MPF APP2 segment) of the MP Endian field and the
 // per-image size/offset fields that must be patched once final lengths are known.
 type mpfFields struct {
-	endianOff                          int
+	endianOff                            int
 	size0Off, off0Off, size1Off, off1Off int
 }
 

@@ -60,3 +60,36 @@ func TestNoBoostWhereEqual(t *testing.T) {
 		t.Errorf("equal pixel reconstructed %.3f, want ~0.3", rec.Pix[3])
 	}
 }
+
+// A per-channel (RGB) gain map must reconstruct distinct per-channel boosts.
+func TestMultiChannelRoundTrip(t *testing.T) {
+	const W, H = 12, 12
+	sdr := imaging.New(W, H)
+	hdr := imaging.New(W, H)
+	// SDR mid-gray; HDR pushes R +1 stop, G +0.5, B +2 stops.
+	boosts := [3]float64{2.0, math.Sqrt2, 4.0}
+	for p := range W * H {
+		i := p * 3
+		for c := range 3 {
+			sdr.Pix[i+c] = 0.25
+			hdr.Pix[i+c] = float32(0.25 * boosts[c])
+		}
+	}
+	o := DefaultOptions()
+	o.MultiChannel = true
+	o.MaxBoostStops = 3 // caps blue's +2 comfortably
+	gm, meta, err := Compute(sdr, hdr, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gm.Channels != 3 || !meta.MultiChannel {
+		t.Fatalf("expected 3-channel map, got %d", gm.Channels)
+	}
+	rec := Reconstruct(sdr, gm, meta, 1.0)
+	for c := range 3 {
+		want := float32(0.25 * boosts[c])
+		if d := math.Abs(float64(rec.Pix[c] - want)); d > 0.02 {
+			t.Errorf("channel %d reconstructed %.3f, want %.3f", c, rec.Pix[c], want)
+		}
+	}
+}

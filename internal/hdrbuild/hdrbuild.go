@@ -17,9 +17,10 @@ package hdrbuild
 
 import (
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/invis/arw2uhdr/internal/imaging"
+	"github.com/invis/arw2uhdr/internal/xmath"
 )
 
 // Mode selects the HDR-derivation strategy.
@@ -71,22 +72,6 @@ func DefaultOptions() Options {
 		BlurFrac: 0, MaxBoostStops: 3.0}
 }
 
-func smoothstep(a, b, x float64) float64 {
-	if b <= a {
-		if x < a {
-			return 0
-		}
-		return 1
-	}
-	t := (x - a) / (b - a)
-	if t < 0 {
-		t = 0
-	} else if t > 1 {
-		t = 1
-	}
-	return t * t * (3 - 2*t)
-}
-
 // anchorGains returns per-channel multipliers k such that raw*k matches sdr in the midtones.
 func anchorGains(sdr, raw *imaging.Image) [3]float64 {
 	const loY, hiY = 0.12, 0.90
@@ -103,7 +88,7 @@ func anchorGains(sdr, raw *imaging.Image) [3]float64 {
 			if ys < loY || ys > hiY {
 				continue
 			}
-			for c := 0; c < 3; c++ {
+			for c := range 3 {
 				rv := float64(raw.Pix[i+c])
 				sv := float64(sdr.Pix[i+c])
 				if rv > 1e-4 && sv > 1e-4 {
@@ -113,12 +98,12 @@ func anchorGains(sdr, raw *imaging.Image) [3]float64 {
 		}
 	}
 	var k [3]float64
-	for c := 0; c < 3; c++ {
+	for c := range 3 {
 		if len(ratios[c]) == 0 {
 			k[c] = 1
 			continue
 		}
-		sort.Float64s(ratios[c])
+		slices.Sort(ratios[c])
 		k[c] = ratios[c][len(ratios[c])/2]
 	}
 	return k
@@ -184,7 +169,7 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 	out := imaging.New(W, H)
 
 	if o.Mode == ModeDevelop {
-		for i := 0; i < W*H*3; i++ {
+		for i := range W * H * 3 {
 			v := float64(rawLin.Pix[i]) * k[i%3]
 			out.Pix[i] = float32(softShoulder(v, o.MaxBoostStops))
 		}
@@ -209,16 +194,11 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 	if o.GuideRadiusFrac > 0 {
 		const eps = 1e-6
 		gRec = make([]float64, W*H)
-		for p := 0; p < W*H; p++ {
+		for p := range W * H {
 			i := p * 3
 			rY := 0.2126*float64(rawLin.Pix[i])*k[0] + 0.7152*float64(rawLin.Pix[i+1])*k[1] + 0.0722*float64(rawLin.Pix[i+2])*k[2]
-			g := math.Log2(math.Max(rY, eps) / math.Max(luma[p], eps))
-			if g < 0 {
-				g = 0
-			} else if g > o.MaxBoostStops {
-				g = o.MaxBoostStops
-			}
-			gRec[p] = g * smoothstep(o.RecoverLo, o.RecoverHi, luma[p])
+			g := xmath.Clamp(math.Log2(math.Max(rY, eps)/math.Max(luma[p], eps)), 0, o.MaxBoostStops)
+			gRec[p] = g * xmath.Smoothstep(o.RecoverLo, o.RecoverHi, luma[p])
 		}
 		r := int(o.GuideRadiusFrac*float64(W) + 0.5)
 		ge := o.GuideEps
@@ -239,13 +219,13 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 			// display boost: monotonic fixed-width ramp from the threshold, plateauing at full
 			// strength. Never decreases with luminance, so no gain valley (= no gray outline).
 			yb := lumaBoost[p]
-			liftW := smoothstep(o.Threshold, rampHi, yb)
+			liftW := xmath.Smoothstep(o.Threshold, rampHi, yb)
 			boost := math.Exp2(o.Strength * liftW)
 
 			if gRec != nil {
 				// guided luminance-gain path (expert knob)
 				gain := math.Exp2(gRec[p]) * boost
-				for c := 0; c < 3; c++ {
+				for c := range 3 {
 					v := float64(sdrLin.Pix[i+c]) * gain
 					out.Pix[i+c] = float32(softShoulder(v, o.MaxBoostStops))
 				}
@@ -254,8 +234,8 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 
 			// Default: clip-gated per-channel splice. wRec is ~0 below the SDR clip point, so RAW
 			// content only ever replaces clipped/near-clipped JPEG data.
-			wRec := smoothstep(o.RecoverLo, o.RecoverHi, luma[p])
-			for c := 0; c < 3; c++ {
+			wRec := xmath.Smoothstep(o.RecoverLo, o.RecoverHi, luma[p])
+			for c := range 3 {
 				s := float64(sdrLin.Pix[i+c])
 				rv := float64(rawLin.Pix[i+c]) * k[c]
 				recovered := s*(1-wRec) + math.Max(s, rv)*wRec

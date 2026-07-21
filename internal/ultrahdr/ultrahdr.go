@@ -77,7 +77,7 @@ func encodeGainMapJPEG(gm *gainmap.GainMap, quality int) ([]byte, error) {
 		img = gr
 	} else {
 		rgba := image.NewRGBA(image.Rect(0, 0, gm.W, gm.H))
-		for p := 0; p < gm.W*gm.H; p++ {
+		for p := range gm.W * gm.H {
 			rgba.Pix[p*4] = gm.Pix[p*3]
 			rgba.Pix[p*4+1] = gm.Pix[p*3+1]
 			rgba.Pix[p*4+2] = gm.Pix[p*3+2]
@@ -117,9 +117,22 @@ func insertSegments(base []byte, segs [][]byte) ([]byte, []int, error) {
 			break // unexpected; copy remainder below
 		}
 		marker := base[i+1]
-		// Standalone markers without length.
+		// Fill bytes: any run of 0xFF between markers is padding; skip it.
+		if marker == 0xFF {
+			i++
+			continue
+		}
 		if marker == 0xD9 { // EOI
 			break
+		}
+		// Standalone markers carry no length payload (TEM, RST0..RST7).
+		if marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7) {
+			if !inserted {
+				doInsert()
+			}
+			out = append(out, base[i:i+2]...)
+			i += 2
+			continue
 		}
 		isAPPn := marker >= 0xE0 && marker <= 0xEF
 		if !isAPPn && !inserted {
@@ -134,8 +147,8 @@ func insertSegments(base []byte, segs [][]byte) ([]byte, []int, error) {
 		}
 		segLength := int(base[i+2])<<8 | int(base[i+3])
 		end := i + 2 + segLength
-		if end > len(base) {
-			return nil, nil, fmt.Errorf("truncated segment at %d", i)
+		if end > len(base) || segLength < 2 {
+			return nil, nil, fmt.Errorf("invalid segment length %d at %d", segLength, i)
 		}
 		seg := base[i:end]
 		if isAPPn && (isXMPSeg(seg, marker) || isMPFSeg(seg, marker)) {
