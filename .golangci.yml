@@ -1,0 +1,30 @@
+# golangci-lint configuration for arw2uhdr.
+# Run: golangci-lint run ./...
+version: "2"
+
+run:
+  timeout: 5m
+  build-tags: []
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - unconvert
+    - unparam
+    - prealloc
+    - gocritic
+    - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

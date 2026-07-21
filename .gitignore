@@ -1,3 +1,17 @@
-bin/
+# build output
+/bin/
+/dist/
+
+# raw samples (kept out of git; supply your own)
 *.ARW
 *.arw
+
+# debug/tool artifacts
+*.png
+!docs/**/*.png
+*_uhdr.jpg
+
+# go
+*.test
+*.out
+coverage.*
