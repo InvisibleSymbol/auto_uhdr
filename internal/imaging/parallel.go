@@ -5,29 +5,31 @@ import (
 	"sync"
 )
 
-// ParallelRows splits [0,h) into contiguous bands and runs fn(y0,y1) concurrently, one band per
-// worker. Used to parallelize per-row image loops across cores.
-func ParallelRows(h int, fn func(y0, y1 int)) {
-	workers := runtime.NumCPU()
-	if workers > h {
-		workers = h
-	}
-	if workers <= 1 {
-		fn(0, h)
+// ParallelBands splits [0,n) into up to GOMAXPROCS contiguous bands and runs
+// fn(lo,hi) for each concurrently, blocking until all bands finish. It is the
+// single work-splitting primitive the image loops build on (rows, columns, or
+// flat pixel ranges — the caller decides what n means).
+func ParallelBands(n int, fn func(lo, hi int)) {
+	if n <= 0 {
 		return
 	}
+	workers := min(runtime.GOMAXPROCS(0), n)
+	if workers <= 1 {
+		fn(0, n)
+		return
+	}
+	band := (n + workers - 1) / workers
 	var wg sync.WaitGroup
-	band := (h + workers - 1) / workers
-	for y0 := 0; y0 < h; y0 += band {
-		y1 := y0 + band
-		if y1 > h {
-			y1 = h
-		}
+	for lo := 0; lo < n; lo += band {
 		wg.Add(1)
-		go func(a, b int) {
+		go func(lo, hi int) {
 			defer wg.Done()
-			fn(a, b)
-		}(y0, y1)
+			fn(lo, hi)
+		}(lo, min(lo+band, n))
 	}
 	wg.Wait()
 }
+
+// ParallelRows runs fn over horizontal bands of an h-row image. It is a named
+// alias for [ParallelBands] that reads naturally at per-row loops.
+func ParallelRows(h int, fn func(y0, y1 int)) { ParallelBands(h, fn) }
