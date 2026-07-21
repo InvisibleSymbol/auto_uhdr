@@ -47,6 +47,52 @@ func TestWarpIdentityOnZeroKnots(t *testing.T) {
 	}
 }
 
+// A flat image with positive vignetting knots (increasing toward the corner)
+// must be brightened more at the corners than at the center.
+func TestVignettingBrightensCorners(t *testing.T) {
+	W, H := 80, 60
+	im := imaging.New(W, H)
+	for i := range im.Pix {
+		im.Pix[i] = 0.5
+	}
+	// zero at center, rising to the corner
+	vign := make([]int16, 11)
+	for i := range vign {
+		vign[i] = int16(i * 400)
+	}
+	cp := &CorrParams{
+		HasDistortion: true, DistortionN: 11, Distortion: make([]int16, 11),
+		HasVignetting: true, VignettingN: len(vign), Vignetting: vign,
+	}
+	out := Warp(im, cp, WarpConfig{CropScale: 1, ApplyVignetting: true})
+	center := out.Pix[(H/2*W+W/2)*3]
+	corner := out.Pix[0]
+	if !(corner > center+1e-3) {
+		t.Errorf("corner (%v) not brighter than center (%v)", corner, center)
+	}
+	if math.Abs(float64(center)-0.5) > 5e-3 {
+		t.Errorf("center gain should be ~1 (0.5), got %v", center)
+	}
+}
+
+// Vignetting disabled must leave brightness untouched even when knots exist.
+func TestVignettingDisabledIsPhotometricIdentity(t *testing.T) {
+	im := imaging.New(40, 30)
+	for i := range im.Pix {
+		im.Pix[i] = 0.5
+	}
+	cp := &CorrParams{
+		HasDistortion: true, DistortionN: 11, Distortion: make([]int16, 11),
+		HasVignetting: true, VignettingN: 11, Vignetting: []int16{0, 100, 200, 400, 800, 1600, 2400, 3200, 4000, 5000, 6000},
+	}
+	out := Warp(im, cp, WarpConfig{CropScale: 1, ApplyVignetting: false})
+	for i := range out.Pix {
+		if math.Abs(float64(out.Pix[i])-0.5) > 1e-3 {
+			t.Fatalf("disabled vignetting changed pixel %d: %v", i, out.Pix[i])
+		}
+	}
+}
+
 func sonyWarpForTest(im *imaging.Image, cp *CorrParams) *imaging.Image {
 	return Warp(im, cp, WarpConfig{CropScale: 1.0, ApplyCA: false})
 }
