@@ -6,7 +6,7 @@ package register
 
 import (
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/invis/arw2uhdr/internal/imaging"
 )
@@ -148,9 +148,18 @@ func Estimate(ref, mov *imaging.Image, opts Options) Affine {
 
 	var samples []sample
 	margin := half + R + 1
-	for gy := 0; gy < o.GridY; gy++ {
+	span := 2*R + 1
+	nccBuf := make([]float64, span*span) // reused per patch
+	at := func(sx, sy int) float64 { return nccBuf[(sy+R)*span+(sx+R)] }
+	get := func(sx, sy int) float64 { // 0 outside the search window
+		if sx < -R || sx > R || sy < -R || sy > R {
+			return 0
+		}
+		return at(sx, sy)
+	}
+	for gy := range o.GridY {
 		cy := margin + (wh-2*margin)*gy/(o.GridY-1)
-		for gx := 0; gx < o.GridX; gx++ {
+		for gx := range o.GridX {
 			cx := margin + (ww-2*margin)*gx/(o.GridX-1)
 			refP := patchAt(gr, cx, cy)
 			// texture gate
@@ -161,15 +170,13 @@ func Estimate(ref, mov *imaging.Image, opts Options) Affine {
 			if s/float64(len(refP)) < 0.01 {
 				continue
 			}
-			// integer search for best NCC
+			// integer search for best NCC over the whole window
 			best := -2.0
 			var bsx, bsy int
-			nccAt := map[[2]int]float64{}
 			for sy := -R; sy <= R; sy++ {
 				for sx := -R; sx <= R; sx++ {
-					movP := patchAt(gm, cx+sx, cy+sy)
-					c := ncc(refP, movP)
-					nccAt[[2]int{sx, sy}] = c
+					c := ncc(refP, patchAt(gm, cx+sx, cy+sy))
+					nccBuf[(sy+R)*span+(sx+R)] = c
 					if c > best {
 						best = c
 						bsx, bsy = sx, sy
@@ -179,9 +186,9 @@ func Estimate(ref, mov *imaging.Image, opts Options) Affine {
 			if best < 0.3 {
 				continue
 			}
-			// parabolic subpixel refine (guard edges of search window)
-			fx := parabola(nccAt[[2]int{bsx - 1, bsy}], best, nccAt[[2]int{bsx + 1, bsy}])
-			fy := parabola(nccAt[[2]int{bsx, bsy - 1}], best, nccAt[[2]int{bsx, bsy + 1}])
+			// parabolic subpixel refine (edges of the window read as 0)
+			fx := parabola(get(bsx-1, bsy), best, get(bsx+1, bsy))
+			fy := parabola(get(bsx, bsy-1), best, get(bsx, bsy+1))
 			// content matching ref(cx,cy) is at (cx+sx, cy+sy) in mov => sample offset
 			samples = append(samples, sample{
 				x: float64(cx), y: float64(cy),
@@ -255,10 +262,10 @@ func robustLine(s []sample, sel func(sample) (float64, float64)) (a, b float64) 
 }
 
 func median(v []float64) float64 {
-	c := append([]float64(nil), v...)
-	sort.Float64s(c)
-	if len(c) == 0 {
+	if len(v) == 0 {
 		return 0
 	}
+	c := slices.Clone(v)
+	slices.Sort(c)
 	return c[len(c)/2]
 }

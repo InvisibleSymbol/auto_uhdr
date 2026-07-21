@@ -19,6 +19,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 )
 
 // Tag IDs in the Exif SubIFD (plaintext).
@@ -109,7 +111,7 @@ func (t *tiff) readInt16s(e entry) ([]int16, error) {
 		return nil, fmt.Errorf("int16 array tag 0x%04x out of range", e.tag)
 	}
 	out := make([]int16, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = int16(t.bo.Uint16(t.b[off+2*i:]))
 	}
 	return out, nil
@@ -122,7 +124,7 @@ func (t *tiff) readU32s(e entry) ([]uint32, error) {
 		return nil, fmt.Errorf("u32 array tag 0x%04x out of range", e.tag)
 	}
 	out := make([]uint32, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = t.bo.Uint32(t.b[off+4*i:])
 	}
 	return out, nil
@@ -270,7 +272,7 @@ func (c *CorrParams) setDistortion(a []int16) {
 	}
 	c.HasDistortion = true
 	c.DistortionN = n
-	c.Distortion = append([]int16(nil), a[1:1+n]...)
+	c.Distortion = slices.Clone(a[1 : 1+n])
 }
 
 func (c *CorrParams) setVignetting(a []int16) {
@@ -283,7 +285,7 @@ func (c *CorrParams) setVignetting(a []int16) {
 	}
 	c.HasVignetting = true
 	c.VignettingN = n
-	c.Vignetting = append([]int16(nil), a[1:1+n]...)
+	c.Vignetting = slices.Clone(a[1 : 1+n])
 }
 
 // setCA interprets a count-prefixed CA array: data[0]=total (red+blue), red first then blue.
@@ -298,6 +300,33 @@ func (c *CorrParams) setCA(a []int16) {
 	half := total / 2
 	c.HasCA = true
 	c.CATotal = total
-	c.CARed = append([]int16(nil), a[1:1+half]...)
-	c.CABlue = append([]int16(nil), a[1+half:1+total]...)
+	c.CARed = slices.Clone(a[1 : 1+half])
+	c.CABlue = slices.Clone(a[1+half : 1+total])
+}
+
+// Summary renders the parsed correction parameters as a human-readable report,
+// used by the `inspect` command.
+func (c *CorrParams) Summary() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Camera:       %s %s\n", c.Make, c.Model)
+	fmt.Fprintf(&b, "Orientation:  %d\n", c.Orientation)
+	if c.CropW > 0 || c.CropH > 0 {
+		fmt.Fprintf(&b, "Crop:         %dx%d at (%d,%d)\n", c.CropW, c.CropH, c.CropLeft, c.CropTop)
+	}
+	fmt.Fprintf(&b, "Distortion:   %s\n", knotLine(c.HasDistortion, c.DistortionN, c.Distortion))
+	fmt.Fprintf(&b, "Vignetting:   %s\n", knotLine(c.HasVignetting, c.VignettingN, c.Vignetting))
+	if c.HasCA {
+		fmt.Fprintf(&b, "CA (red):     %d knots %v\n", len(c.CARed), c.CARed)
+		fmt.Fprintf(&b, "CA (blue):    %d knots %v\n", len(c.CABlue), c.CABlue)
+	} else {
+		b.WriteString("CA:           (absent)\n")
+	}
+	return b.String()
+}
+
+func knotLine(has bool, n int, v []int16) string {
+	if !has {
+		return "(absent)"
+	}
+	return fmt.Sprintf("%d knots %v", n, v)
 }

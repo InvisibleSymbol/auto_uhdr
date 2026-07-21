@@ -59,8 +59,11 @@ type Meta struct {
 }
 
 // Decode develops the raw at path into a float32 RGB image.
-// With Opts.Linear the pixels are scene-linear (needed for HDR/gain-map math); otherwise
-// they carry LibRaw's default display gamma (handy for previews/geometry checks).
+//
+// With Opts.Linear the pixels are scene-linear (needed for HDR/gain-map math);
+// otherwise they carry LibRaw's default display gamma (handy for previews/geometry
+// checks). The heavy LibRaw calls are not interruptible; cancellation is handled by
+// the orchestrator at stage boundaries.
 func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	lr := C.libraw_init(0)
 	if lr == nil {
@@ -68,23 +71,23 @@ func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	}
 	defer C.libraw_close(lr)
 
-	lr.params.output_bps = C.int(16)
-	lr.params.no_auto_bright = C.int(1)
+	lr.params.output_bps = 16
+	lr.params.no_auto_bright = 1
 	if o.Linear {
 		lr.params.gamm[0] = C.double(1.0)
 		lr.params.gamm[1] = C.double(1.0)
 	}
 	if o.UseCameraWB {
-		lr.params.use_camera_wb = C.int(1)
+		lr.params.use_camera_wb = 1
 	}
 	lr.params.output_color = C.int(o.OutputColor)
 	lr.params.user_qual = C.int(o.Demosaic)
 	lr.params.highlight = C.int(o.Highlight)
 	if o.HalfSize {
-		lr.params.half_size = C.int(1)
+		lr.params.half_size = 1
 	}
 	if o.NoAutoScale {
-		lr.params.no_auto_scale = C.int(1)
+		lr.params.no_auto_scale = 1
 	}
 
 	cpath := C.CString(path)
@@ -99,6 +102,7 @@ func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	if rc := C.libraw_dcraw_process(lr); rc != 0 {
 		return nil, nil, fmt.Errorf("dcraw_process: %s", strerr(rc))
 	}
+
 	var errc C.int
 	pi := C.libraw_dcraw_make_mem_image(lr, &errc)
 	if pi == nil {
@@ -106,11 +110,8 @@ func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	}
 	defer C.libraw_dcraw_clear_mem(pi)
 
-	w := int(pi.width)
-	h := int(pi.height)
-	colors := int(pi.colors)
-	bits := int(pi.bits)
-	n := int(pi.data_size)
+	w, h := int(pi.width), int(pi.height)
+	colors, bits, n := int(pi.colors), int(pi.bits), int(pi.data_size)
 	if colors != 3 {
 		return nil, nil, fmt.Errorf("unexpected colors=%d (want 3)", colors)
 	}
@@ -122,14 +123,12 @@ func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	case 16:
 		const inv = 1.0 / 65535.0
 		// interleaved RGB, host byte order (little-endian on amd64)
-		for i := 0; i < w*h*3; i++ {
-			lo := uint16(buf[2*i])
-			hi := uint16(buf[2*i+1])
-			im.Pix[i] = float32(float64(lo|hi<<8) * inv)
+		for i := range w * h * 3 {
+			im.Pix[i] = float32(float64(uint16(buf[2*i])|uint16(buf[2*i+1])<<8) * inv)
 		}
 	case 8:
 		const inv = 1.0 / 255.0
-		for i := 0; i < w*h*3; i++ {
+		for i := range w * h * 3 {
 			im.Pix[i] = float32(float64(buf[i]) * inv)
 		}
 	default:
@@ -137,9 +136,9 @@ func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	}
 
 	meta := &Meta{
-		Make:   C.GoString(&lr.idata.make[0]),
-		Model:  C.GoString(&lr.idata.model[0]),
-		Width:  w, Height: h, Bits: bits, Colors: colors,
+		Make:  C.GoString(&lr.idata.make[0]),
+		Model: C.GoString(&lr.idata.model[0]),
+		Width: w, Height: h, Bits: bits, Colors: colors,
 	}
 	return im, meta, nil
 }
