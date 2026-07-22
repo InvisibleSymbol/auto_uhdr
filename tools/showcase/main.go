@@ -8,9 +8,10 @@
 //	row 4  an SDR preview of the HDR rendition via a compressed, HLG-like curve:
 //	       the SDR range keeps the sRGB gamma shape (squished into [0,white], so
 //	       un-boosted content stays faithful to row 1, just a touch darker) while
-//	       the recovered highlights get an aggressive log shoulder into [white,1],
-//	       so they read as a separated band — the recovered detail viewers without
-//	       an HDR screen would otherwise miss
+//	       the recovered highlights get a smooth shoulder into [white,1] that joins
+//	       the SDR curve tangentially (no kink) and ramps up exponentially, so they
+//	       read as a separated band — the recovered detail viewers without an HDR
+//	       screen would otherwise miss
 //
 // The output is one Ultra HDR JPEG whose gain map is zero everywhere except the
 // row-3 tiles. Processing is at reduced resolution (half-size decode) for speed.
@@ -55,7 +56,7 @@ const labelPad = 10 // margin left of the label and between label and first tile
 func main() {
 	peakPct := flag.Float64("peak", 0.995, "row-4 highlight-peak percentile (hot-pixel-robust)")
 	white := flag.Float64("white", 0.75, "row-4 SDR white point: display level SDR-white squishes to, reserving [white,1] for HDR")
-	agg := flag.Float64("agg", 8, "row-4 HDR-shoulder aggressiveness (higher = steeper log rolloff)")
+	agg := flag.Float64("agg", 4, "row-4 HDR-shoulder ramp exponent (higher = flatter start, sharper late rise; C¹ at the split)")
 	scale := flag.Float64("scale", 1, "output resolution multiplier (2 = double-size tiles, crisper)")
 	flag.Parse()
 	if flag.NArg() < 2 {
@@ -214,10 +215,13 @@ func srgb(lin *imaging.Image) *imaging.Image {
 // curve. The SDR range (linear ≤ 1) keeps the ordinary sRGB gamma *shape*, just
 // scaled into [0, white], so un-boosted content stays faithful to the JPEG — same
 // tonality, uniformly a touch darker, never higher-contrast. The HDR range
-// (linear 1..peak) then switches to an aggressive log shoulder that packs the
-// recovered highlights into the reserved [white, 1] band, so they read as a
-// distinct, separated zone instead of dissolving into the squish (gamma below the
-// SDR white, log above — the HLG structure, compressed to fit SDR).
+// (linear 1..peak) is a smooth shoulder that packs the recovered highlights into
+// the reserved [white, 1] band so they read as a distinct, separated zone.
+//
+// The shoulder is C¹-continuous with the SDR curve at the split: it starts tangent
+// to the (shallow) SDR slope — no kink — then a t^agg term ramps it up to white, so
+// highlights ease in gently and accelerate, rather than jumping in slope. agg sets
+// how exponential that ramp is (higher = flatter start, sharper late rise).
 //
 // The squish is adaptive: a tile whose highlights barely exceed SDR needs little
 // headroom, so its white point relaxes toward 1 and it is left essentially as the
@@ -239,14 +243,21 @@ func tonemapInvHLG(hdr *imaging.Image, tone toneParams) *imaging.Image {
 	hdrAmt := min(max((peak-1)/0.5, 0), 1)
 	white := 1 - (1-tone.white)*hdrAmt
 
-	logK := math.Log(1 + tone.agg)
-	span := max(peak-1, 1e-6) // guard the all-SDR tile (peak≈1)
+	const srgbSlope1 = 1.055 / 2.4 // d/dv sRGBEncode at v=1 ≈ 0.4396
+	span := max(peak-1, 1e-6)      // guard the all-SDR tile (peak≈1)
 	curve := func(v float64) float32 {
 		if v <= 1 {
 			return float32(white * float64(color.SRGBEncode(float32(v))))
 		}
+		if white >= 1 {
+			return 1
+		}
 		t := min((v-1)/span, 1)
-		return float32(white + (1-white)*math.Log(1+tone.agg*t)/logK)
+		// Shoulder start-slope (in t space) that makes the join tangent to the SDR
+		// curve; clamped so the t^agg weight stays positive for extreme peaks.
+		m := min(white*srgbSlope1*span/(1-white), 0.95)
+		s := m*t + (1-m)*math.Pow(t, tone.agg)
+		return float32(white + (1-white)*s)
 	}
 
 	out := imaging.New(hdr.W, hdr.H)
