@@ -21,11 +21,12 @@ type convertFlags struct {
 	gmScale    int
 	neutralize bool
 
-	demosaic   string
-	lens       string
-	vignetting bool
-	noRegister bool
-	chroma     float64
+	demosaic    string
+	lens        string
+	vignetting  bool
+	noRegister  bool
+	chroma      float64
+	chromaTrack bool
 
 	verbose bool
 }
@@ -46,6 +47,7 @@ func (c *convertFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&c.vignetting, "vignetting", false, "apply experimental radial vignetting correction")
 	fs.BoolVar(&c.noRegister, "no-register", false, "skip residual registration (debug)")
 	fs.Float64Var(&c.chroma, "chroma", d.Chroma, "raw mode RGB gain saturation 0..1 (0 = neutral, 1 = full per-channel)")
+	fs.BoolVar(&c.chromaTrack, "chroma-track", d.ChromaTrack, "ramp --chroma with JPEG brightness (peak in clipped highlights)")
 	fs.BoolVar(&c.verbose, "v", false, "verbose progress to stderr")
 }
 
@@ -106,6 +108,7 @@ func (c *convertFlags) options() (arw2uhdr.Options, error) {
 	o.Register = !c.noRegister
 	o.NoNeutralize = !c.neutralize
 	o.Chroma = c.chroma
+	o.ChromaTrack = c.chromaTrack
 	if c.verbose {
 		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}

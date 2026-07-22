@@ -28,6 +28,11 @@ plus a new default rendering and two correctness fixes to the highlight path.
   single-channel one), 1 is full per-channel recovery (rebuilds clipped colour
   but pulls mid-highlights toward the flatter RAW colour). ~0.3 adds real colour
   without a jarring mid-highlight transition.
+- `--chroma-track`: ramps `--chroma` with JPEG brightness so per-channel colour
+  recovery concentrates in the clipped highlights (where the JPEG lost colour)
+  and stays neutral in the midtones (where the JPEG's colour is good) — `--chroma`
+  becomes the peak reached at clipping. Fixes mid-highlight graying while still
+  recovering full colour in blown areas.
 
 ### Fixed
 - Portrait frames (EXIF 6/8) were misaligned: LibRaw auto-rotated the RAW to the
