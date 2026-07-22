@@ -14,9 +14,14 @@ import (
 type HDRMode int
 
 const (
-	// HDRHighlight is JPEG-anchored highlight recovery plus an optional display
-	// boost (the default, validated look).
-	HDRHighlight HDRMode = iota
+	// HDRRaw is the default: a JPEG-gated, RAW-luminance-driven boost. The JPEG masks
+	// shadows; the boost magnitude comes from how much brighter the RAW is than the
+	// JPEG, so bright surfaces lift by their real scene luminance and clipped regions
+	// reconstruct genuine RAW detail. Faithful/photographic rather than synthetic pop.
+	HDRRaw HDRMode = iota
+	// HDRHighlight is the older JPEG-anchored highlight recovery plus a synthetic
+	// display boost (punchier, less faithful).
+	HDRHighlight
 	// HDRDevelop treats the full RAW linear as the HDR image (creative).
 	HDRDevelop
 )
@@ -98,19 +103,18 @@ type Options struct {
 
 // DefaultOptions returns the validated defaults.
 func DefaultOptions() Options {
-	hd := hdrbuild.DefaultOptions()
 	return Options{
 		Demosaic:       DemosaicAHD,
 		Lens:           LensDistortionCA,
 		Vignetting:     false,
 		Register:       true,
-		Mode:           HDRHighlight,
-		Strength:       hd.Strength,
-		Threshold:      hd.Threshold,
-		RampWidth:      hd.RampWidth,
-		MaxBoost:       hd.MaxBoostStops,
+		Mode:           HDRRaw,
+		Strength:       1.0, // raw-boost: multiplier on the physical RAW gain (1 = as measured)
+		Threshold:      0.5, // JPEG-luma gate; masks shadows (RAW gain is ~0 in midtones anyway)
+		RampWidth:      0.35,
+		MaxBoost:       3.0,
 		GainMap:        GainMapLuminance,
-		GainMapScale:   4,
+		GainMapScale:   2, // finer than the old 4: raw-boost carries real detail in the map
 		GainMapQuality: ultrahdr.DefaultOptions().GainMapQuality,
 	}
 }
@@ -136,8 +140,13 @@ func (o Options) warpConfig() sonylens.WarpConfig {
 
 func (o Options) hdrOptions() hdrbuild.Options {
 	ho := hdrbuild.DefaultOptions()
-	if o.Mode == HDRDevelop {
+	switch o.Mode {
+	case HDRRaw:
+		ho.Mode = hdrbuild.ModeRawBoost
+	case HDRDevelop:
 		ho.Mode = hdrbuild.ModeDevelop
+	default:
+		ho.Mode = hdrbuild.ModeHighlight
 	}
 	ho.Strength = o.Strength
 	ho.Threshold = o.Threshold
