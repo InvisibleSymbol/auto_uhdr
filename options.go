@@ -93,8 +93,9 @@ type Options struct {
 
 	// Gain map + container
 	GainMap        GainMapMode
-	GainMapScale   int // downsample factor per dimension (1 = full res)
-	GainMapQuality int // gain-map JPEG quality, 1..100
+	GainMapScale   int  // downsample factor per dimension (1 = full res)
+	GainMapQuality int  // gain-map JPEG quality, 1..100
+	NoNeutralize   bool // disable neutralizing per-channel colour in clipped highlights (RGB maps)
 
 	// Logger receives structured progress at Debug level. Defaults to a discard
 	// logger when nil.
@@ -160,6 +161,7 @@ func (o Options) gainmapOptions() gainmap.Options {
 	gmo.MultiChannel = o.GainMap == GainMapRGB
 	gmo.MaxBoostStops = o.MaxBoost
 	gmo.ScaleFactor = o.GainMapScale
+	gmo.NeutralizeHighlights = !o.NoNeutralize
 	return gmo
 }
 
