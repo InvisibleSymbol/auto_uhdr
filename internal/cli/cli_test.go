@@ -31,7 +31,7 @@ func TestFlagDefaults(t *testing.T) {
 	if o.Strength != def.Strength || o.Threshold != def.Threshold || o.MaxBoost != def.MaxBoost {
 		t.Errorf("flag defaults diverge from DefaultOptions: %+v", o)
 	}
-	if o.Lens != arw2uhdr.LensDistortionCA || o.GainMap != arw2uhdr.GainMapLuminance || !o.Register {
+	if o.Lens != arw2uhdr.LensDistortionCA || o.GainMap != arw2uhdr.GainMapRGB || !o.Register {
 		t.Errorf("unexpected default modes: %+v", o)
 	}
 }
