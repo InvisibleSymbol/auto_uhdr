@@ -63,11 +63,14 @@ type Options struct {
 	// BlurFrac optionally low-passes the boost ramp's luma (fraction of width; default 0).
 	BlurFrac float64
 
-	// PreserveChroma (ModeRawBoost only): apply the RAW-driven boost as a single neutral
-	// luminance multiplier instead of per channel, so the SDR's exact hue/saturation is kept
-	// (the camera JPEG's colour is brightened, not blended toward the flatter RAW colour). Fixes
-	// mid-highlight desaturation at the cost of per-channel clipped-channel recovery.
-	PreserveChroma bool
+	// ChromaStrength (ModeRawBoost only) dials how much of the boost is per-channel vs neutral,
+	// in [0,1]. Each channel's gain is lerp(luminanceGain, perChannelGain, ChromaStrength). At 0
+	// the boost is a single neutral multiplier that keeps the JPEG's exact colour (no mid-highlight
+	// desaturation, but no per-channel recovery either — and the RGB gain map degenerates to the
+	// single-channel one). At 1 it is full per-channel recovery (rebuilds clipped colour, but pulls
+	// mid-highlights toward the flatter RAW colour). Small values (~0.3) add some real colour
+	// without a jarring transition.
+	ChromaStrength float64
 
 	MaxBoostStops float64 // ceiling on total boost, in stops (default 3.0)
 }
@@ -201,26 +204,20 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 		if strength <= 0 {
 			strength = 1.0
 		}
+		chroma := xmath.Clamp01(o.ChromaStrength)
 		imaging.ParallelRows(H, func(py0, py1 int) {
 			for p := py0 * W; p < py1*W; p++ {
 				i := p * 3
 				lS := 0.2126*float64(sdrLin.Pix[i]) + 0.7152*float64(sdrLin.Pix[i+1]) + 0.0722*float64(sdrLin.Pix[i+2])
+				// anchored RAW luminance; its ratio to the SDR luminance is the neutral gain.
+				lR := 0.2126*float64(rawLin.Pix[i])*k[0] + 0.7152*float64(rawLin.Pix[i+1])*k[1] + 0.0722*float64(rawLin.Pix[i+2])*k[2]
 				gate := xmath.Smoothstep(o.Threshold, rampHi, lS)
-				if o.PreserveChroma {
-					// One neutral multiplier from the RAW luminance ratio: keeps the SDR's exact
-					// colour, brightens by how much brighter the scene really is.
-					lR := 0.2126*float64(rawLin.Pix[i])*k[0] + 0.7152*float64(rawLin.Pix[i+1])*k[1] + 0.0722*float64(rawLin.Pix[i+2])*k[2]
-					rg := xmath.Clamp(math.Log2((lR+eps)/(lS+eps)), 0, o.MaxBoostStops)
-					boost := math.Exp2(rg * gate * strength)
-					for c := range 3 {
-						out.Pix[i+c] = float32(softShoulder(float64(sdrLin.Pix[i+c])*boost, o.MaxBoostStops))
-					}
-					continue
-				}
+				rgLum := xmath.Clamp(math.Log2((lR+eps)/(lS+eps)), 0, o.MaxBoostStops)
 				for c := range 3 {
 					s := float64(sdrLin.Pix[i+c])
 					rv := float64(rawLin.Pix[i+c]) * k[c]
-					rg := xmath.Clamp(math.Log2((rv+eps)/(s+eps)), 0, o.MaxBoostStops)
+					rgC := xmath.Clamp(math.Log2((rv+eps)/(s+eps)), 0, o.MaxBoostStops)
+					rg := xmath.Lerp(rgLum, rgC, chroma) // neutral..per-channel
 					out.Pix[i+c] = float32(softShoulder(s*math.Exp2(rg*gate*strength), o.MaxBoostStops))
 				}
 			}

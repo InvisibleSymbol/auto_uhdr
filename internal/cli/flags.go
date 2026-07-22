@@ -16,16 +16,16 @@ type convertFlags struct {
 	rampWidth float64
 	maxBoost  float64
 
-	gainmap      string
-	gmQuality    int
-	gmScale      int
-	noNeutralize bool
+	gainmap    string
+	gmQuality  int
+	gmScale    int
+	neutralize bool
 
-	demosaic       string
-	lens           string
-	vignetting     bool
-	noRegister     bool
-	preserveChroma bool
+	demosaic   string
+	lens       string
+	vignetting bool
+	noRegister bool
+	chroma     float64
 
 	verbose bool
 }
@@ -40,12 +40,12 @@ func (c *convertFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.gainmap, "gainmap", "single", "single | rgb (per-channel colour gain map)")
 	fs.IntVar(&c.gmQuality, "gainmap-quality", d.GainMapQuality, "gain map JPEG quality 1-100")
 	fs.IntVar(&c.gmScale, "gainmap-scale", d.GainMapScale, "gain map downsample factor per dimension (1 = full res)")
-	fs.BoolVar(&c.noNeutralize, "no-neutralize", false, "keep per-channel colour in clipped highlights (RGB gain map)")
+	fs.BoolVar(&c.neutralize, "neutralize", false, "neutralize per-channel colour in clipped highlights (RGB gain map)")
 	fs.StringVar(&c.demosaic, "demosaic", "ahd", "ahd | dcb | dht | vng | ppg | linear")
 	fs.StringVar(&c.lens, "lens", "distortion+ca", "distortion+ca | distortion | off")
 	fs.BoolVar(&c.vignetting, "vignetting", false, "apply experimental radial vignetting correction")
 	fs.BoolVar(&c.noRegister, "no-register", false, "skip residual registration (debug)")
-	fs.BoolVar(&c.preserveChroma, "preserve-chroma", false, "raw mode: neutral boost keeping the JPEG's exact colour")
+	fs.Float64Var(&c.chroma, "chroma", d.Chroma, "raw mode RGB gain saturation 0..1 (0 = neutral, 1 = full per-channel)")
 	fs.BoolVar(&c.verbose, "v", false, "verbose progress to stderr")
 }
 
@@ -104,8 +104,8 @@ func (c *convertFlags) options() (arw2uhdr.Options, error) {
 
 	o.Vignetting = c.vignetting
 	o.Register = !c.noRegister
-	o.NoNeutralize = c.noNeutralize
-	o.PreserveChroma = c.preserveChroma
+	o.NoNeutralize = !c.neutralize
+	o.Chroma = c.chroma
 	if c.verbose {
 		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}

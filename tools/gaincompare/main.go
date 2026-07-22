@@ -42,37 +42,30 @@ func main() {
 	aff := register.Estimate(jpg, rawA, register.Options{})
 	rawA = aff.Apply(rawA, jpg.W, jpg.H)
 
-	// raw-boost defaults (match the CLI): strength 1, threshold 0.5
-	hoPC := hdrbuild.DefaultOptions()
-	hoPC.Mode = hdrbuild.ModeRawBoost
-	hoPC.Strength, hoPC.Threshold = 1, 0.5
-	hoPerCh := hoPC
-	hoPC.PreserveChroma = true
+	// raw-boost defaults (match the CLI): strength 1, threshold 0.5; sweep the Chroma dial.
+	base := hdrbuild.DefaultOptions()
+	base.Mode = hdrbuild.ModeRawBoost
+	base.Strength, base.Threshold = 1, 0.5
 
-	hdrPerCh, _ := hdrbuild.Build(sdrLin, rawA, hoPerCh)
-	hdrPC, _ := hdrbuild.Build(sdrLin, rawA, hoPC)
+	gmOpt := gainmap.DefaultOptions()
+	gmOpt.MultiChannel = true
+	gmOpt.ScaleFactor = 1
+	gmOpt.NeutralizeHighlights = false
 
-	gmOpt := func(neutral bool) gainmap.Options {
-		o := gainmap.DefaultOptions()
-		o.MultiChannel = true
-		o.ScaleFactor = 1
-		o.NeutralizeHighlights = neutral
-		return o
+	mk := func(chroma float64) *imaging.Image {
+		o := base
+		o.ChromaStrength = chroma
+		hdr, _ := hdrbuild.Build(sdrLin, rawA, o)
+		gm, _, _ := gainmap.Compute(sdrLin, hdr, gmOpt)
+		return enc(orient(gm.ToImage(), cp.Orientation))
 	}
-	gmON, _, _ := gainmap.Compute(sdrLin, hdrPerCh, gmOpt(true))
-	gmOFF, _, _ := gainmap.Compute(sdrLin, hdrPerCh, gmOpt(false))
-	gmPC, _, _ := gainmap.Compute(sdrLin, hdrPC, gmOpt(false))
-
-	a := enc(orient(gmON.ToImage(), cp.Orientation))
-	b := enc(orient(gmOFF.ToImage(), cp.Orientation))
-	c := enc(orient(gmPC.ToImage(), cp.Orientation))
-	panel := hstack3(a, b, c)
+	panel := hstack3(mk(0.0), mk(0.3), mk(1.0))
 	if panel.W > 1800 {
 		s := 1800.0 / float64(panel.W)
 		panel = panel.Resize(int(float64(panel.W)*s), int(float64(panel.H)*s))
 	}
 	must(panel.SavePNG8(out))
-	fmt.Println("wrote", out, "(left: neutralize ON   middle: neutralize OFF   right: preserve-chroma)")
+	fmt.Println("wrote", out, "(RGB gain map at chroma  left: 0.0   middle: 0.3   right: 1.0)")
 }
 
 func enc(im *imaging.Image) *imaging.Image {
