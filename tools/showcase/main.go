@@ -5,13 +5,12 @@
 //	row 2  the RGB gain map (what the tool adds), gamma-lifted for visibility
 //	row 3  the Ultra HDR result — this row carries a real gain map, so on an HDR
 //	       display it actually renders brighter; on SDR it matches row 1
-//	row 4  an SDR preview of the HDR rendition — the whole linear HDR tile is
-//	       exposed down by a single factor so its highlights land at SDR white and
-//	       every darker pixel scales proportionally (a half-as-bright HDR pixel
-//	       stays half as bright). A pure linear exposure, no tone curve, so regions
-//	       the gain map never lifts stay faithful to row 1 (just darker, never
-//	       higher-contrast); the row shows recovered highlight detail viewers
-//	       without an HDR screen would otherwise miss
+//	row 4  an SDR preview of the HDR rendition via a compressed, HLG-like curve:
+//	       the SDR range keeps the sRGB gamma shape (squished into [0,white], so
+//	       un-boosted content stays faithful to row 1, just a touch darker) while
+//	       the recovered highlights get an aggressive log shoulder into [white,1],
+//	       so they read as a separated band — the recovered detail viewers without
+//	       an HDR screen would otherwise miss
 //
 // The output is one Ultra HDR JPEG whose gain map is zero everywhere except the
 // row-3 tiles. Processing is at reduced resolution (half-size decode) for speed.
@@ -48,12 +47,15 @@ const (
 )
 
 func main() {
-	peakPct := flag.Float64("peak", 0.995, "row-4 exposure percentile: HDR value mapped to SDR white (guards hot pixels)")
+	peakPct := flag.Float64("peak", 0.995, "row-4 highlight-peak percentile (hot-pixel-robust)")
+	white := flag.Float64("white", 0.75, "row-4 SDR white point: display level SDR-white squishes to, reserving [white,1] for HDR")
+	agg := flag.Float64("agg", 8, "row-4 HDR-shoulder aggressiveness (higher = steeper log rolloff)")
 	flag.Parse()
 	if flag.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: showcase [-peak p] <dir> <out.jpg>")
+		fmt.Fprintln(os.Stderr, "usage: showcase [-peak p] [-white w] [-agg a] <dir> <out.jpg>")
 		os.Exit(2)
 	}
+	tone := toneParams{peakPct: *peakPct, white: *white, agg: *agg}
 	dir, out := flag.Arg(0), flag.Arg(1)
 
 	pairs := discover(dir)
@@ -74,7 +76,7 @@ func main() {
 	all := make([]tiles, n)
 	for col, pr := range pairs {
 		fmt.Printf("[%d/%d] %s\n", col+1, n, filepath.Base(pr.arw))
-		t := process(pr, *peakPct)
+		t := process(pr, tone)
 		all[col] = t
 		x := colX(col)
 		// SDR base: row1 SDR, row2 gain map, row3 SDR (same base), row4 exposed.
@@ -120,7 +122,9 @@ type tiles struct {
 	sdrDisp, gainViz, exposed, hdrLin *imaging.Image
 }
 
-func process(pr pair, peakPct float64) tiles {
+type toneParams struct{ peakPct, white, agg float64 }
+
+func process(pr pair, tone toneParams) tiles {
 	ro := raw.DefaultOpts()
 	ro.Linear = true
 	ro.Highlight = 2
@@ -161,7 +165,7 @@ func process(pr pair, peakPct float64) tiles {
 	return tiles{
 		sdrDisp: srgb(sdrLinTile), // display base (rows 1 & 3)
 		gainViz: fit(orient(gammaLift(gmViz.ToImage()), o)),
-		exposed: fit(orient(tonemapLinear(hdr, peakPct), o)),
+		exposed: fit(orient(tonemapInvHLG(hdr, tone), o)),
 		hdrLin:  fit(orient(hdr, o)), // linear HDR (row 3 lift)
 	}
 }
@@ -195,16 +199,19 @@ func srgb(lin *imaging.Image) *imaging.Image {
 	return out
 }
 
-// tonemapLinear simulates an SDR photograph of the HDR rendition. It finds the
-// tile's highlight peak (the peakPct percentile of the per-pixel max channel, so a
-// few hot pixels don't drag the whole exposure down) and divides the entire linear
-// tile by it, so the highlights land at SDR white (1.0) and every darker pixel
-// scales by the same factor — a pixel half as bright in HDR stays half as bright
-// here. The HDR range squishes linearly into SDR, with recovered highlight detail
-// fitting inside [0,1]. It is a pure linear exposure (no tone curve), so regions the
-// gain map never lifts stay faithful to the JPEG — just uniformly darker, never
-// higher-contrast. Operates in linear light, then sRGB-encodes for display.
-func tonemapLinear(hdr *imaging.Image, peakPct float64) *imaging.Image {
+// tonemapInvHLG maps the linear HDR tile to SDR with a compressed, HLG-like split
+// curve. The SDR range (linear ≤ 1) keeps the ordinary sRGB gamma *shape*, just
+// scaled into [0, white], so un-boosted content stays faithful to the JPEG — same
+// tonality, uniformly a touch darker, never higher-contrast. The HDR range
+// (linear 1..peak) then switches to an aggressive log shoulder that packs the
+// recovered highlights into the reserved [white, 1] band, so they read as a
+// distinct, separated zone instead of dissolving into the squish (gamma below the
+// SDR white, log above — the HLG structure, compressed to fit SDR).
+//
+// The squish is adaptive: a tile whose highlights barely exceed SDR needs little
+// headroom, so its white point relaxes toward 1 and it is left essentially as the
+// JPEG; only tiles with real recovered highlights are pulled down to make room.
+func tonemapInvHLG(hdr *imaging.Image, tone toneParams) *imaging.Image {
 	n := hdr.W * hdr.H
 	maxes := make([]float64, n)
 	for p := range n {
@@ -212,16 +219,31 @@ func tonemapLinear(hdr *imaging.Image, peakPct float64) *imaging.Image {
 		maxes[p] = max(float64(hdr.Pix[i]), float64(hdr.Pix[i+1]), float64(hdr.Pix[i+2]))
 	}
 	sort.Float64s(maxes)
-	idx := int(float64(n-1) * min(max(peakPct, 0), 1))
-	peak := max(maxes[idx], 1) // never brighten: an all-SDR tile stays as shot
-	s := 1.0 / peak
+	idx := int(float64(n-1) * min(max(tone.peakPct, 0), 1))
+	peak := max(maxes[idx], 1)
+
+	// Reserve headroom only in proportion to how far the tile actually exceeds SDR
+	// (full squish once the peak is ≥ ~0.6 stop over white); an all-SDR tile keeps
+	// white = 1 and renders as the plain JPEG.
+	hdrAmt := min(max((peak-1)/0.5, 0), 1)
+	white := 1 - (1-tone.white)*hdrAmt
+
+	logK := math.Log(1 + tone.agg)
+	span := max(peak-1, 1e-6) // guard the all-SDR tile (peak≈1)
+	curve := func(v float64) float32 {
+		if v <= 1 {
+			return float32(white * float64(color.SRGBEncode(float32(v))))
+		}
+		t := min((v-1)/span, 1)
+		return float32(white + (1-white)*math.Log(1+tone.agg*t)/logK)
+	}
 
 	out := imaging.New(hdr.W, hdr.H)
 	for p := range n {
 		i := p * 3
-		out.Pix[i] = color.SRGBEncode(float32(min(float64(hdr.Pix[i])*s, 1)))
-		out.Pix[i+1] = color.SRGBEncode(float32(min(float64(hdr.Pix[i+1])*s, 1)))
-		out.Pix[i+2] = color.SRGBEncode(float32(min(float64(hdr.Pix[i+2])*s, 1)))
+		out.Pix[i] = curve(float64(hdr.Pix[i]))
+		out.Pix[i+1] = curve(float64(hdr.Pix[i+1]))
+		out.Pix[i+2] = curve(float64(hdr.Pix[i+2]))
 	}
 	return out
 }
