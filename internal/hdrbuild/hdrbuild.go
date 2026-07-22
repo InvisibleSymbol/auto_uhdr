@@ -63,6 +63,12 @@ type Options struct {
 	// BlurFrac optionally low-passes the boost ramp's luma (fraction of width; default 0).
 	BlurFrac float64
 
+	// PreserveChroma (ModeRawBoost only): apply the RAW-driven boost as a single neutral
+	// luminance multiplier instead of per channel, so the SDR's exact hue/saturation is kept
+	// (the camera JPEG's colour is brightened, not blended toward the flatter RAW colour). Fixes
+	// mid-highlight desaturation at the cost of per-channel clipped-channel recovery.
+	PreserveChroma bool
+
 	MaxBoostStops float64 // ceiling on total boost, in stops (default 3.0)
 }
 
@@ -200,6 +206,17 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 				i := p * 3
 				lS := 0.2126*float64(sdrLin.Pix[i]) + 0.7152*float64(sdrLin.Pix[i+1]) + 0.0722*float64(sdrLin.Pix[i+2])
 				gate := xmath.Smoothstep(o.Threshold, rampHi, lS)
+				if o.PreserveChroma {
+					// One neutral multiplier from the RAW luminance ratio: keeps the SDR's exact
+					// colour, brightens by how much brighter the scene really is.
+					lR := 0.2126*float64(rawLin.Pix[i])*k[0] + 0.7152*float64(rawLin.Pix[i+1])*k[1] + 0.0722*float64(rawLin.Pix[i+2])*k[2]
+					rg := xmath.Clamp(math.Log2((lR+eps)/(lS+eps)), 0, o.MaxBoostStops)
+					boost := math.Exp2(rg * gate * strength)
+					for c := range 3 {
+						out.Pix[i+c] = float32(softShoulder(float64(sdrLin.Pix[i+c])*boost, o.MaxBoostStops))
+					}
+					continue
+				}
 				for c := range 3 {
 					s := float64(sdrLin.Pix[i+c])
 					rv := float64(rawLin.Pix[i+c]) * k[c]
