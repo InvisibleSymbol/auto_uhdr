@@ -61,7 +61,7 @@ arw2uhdr convert photo.ARW                    # pairs with photo.JPG automatical
 arw2uhdr convert --gainmap rgb photo.ARW      # per-channel gain map (coloured lights stay saturated)
 arw2uhdr convert --strength 1.5 photo.ARW     # push the RAW-driven lift harder
 arw2uhdr convert --hdr-mode highlight --strength 2 photo.ARW   # older synthetic-boost look
-arw2uhdr convert --gainmap-scale 1 photo.ARW  # full-res gain map (max recovered detail, bigger file)
+arw2uhdr convert --gainmap-scale 4 photo.ARW  # coarser gain map, smaller file
 arw2uhdr convert --verify --json photo.ARW    # machine-readable result + structural self-check
 arw2uhdr batch -j 2 -o out/ ~/Photos          # native parallel batch
 ```
@@ -76,7 +76,7 @@ Key `convert`/`batch` flags:
 | `--ramp-width` | 0.35 | luma span over which the gate opens fully |
 | `--max-boost` | 3.0 | total-boost ceiling in stops (soft shoulder) |
 | `--gainmap` | single | `single` (luminance) or `rgb` (per-channel colour) |
-| `--gainmap-scale` | 2 | gain-map downsample factor (1 = full res; raw mode carries real detail here) |
+| `--gainmap-scale` | 1 | gain-map downsample factor (1 = full res; raise to 2/4 for smaller files) |
 | `--lens` | distortion+ca | `distortion+ca`, `distortion`, or `off` |
 | `--vignetting` | off | experimental radial brightness correction (unvalidated scale) |
 | `--no-register` | — | skip residual registration (debug) |

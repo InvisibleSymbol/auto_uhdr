@@ -16,7 +16,8 @@ plus a new default rendering and two correctness fixes to the highlight path.
   (no dark→bright glow, no RAW shadow noise). More faithful than the previous
   synthetic display boost, which remains as `--hdr-mode highlight` (still
   golden-tested). Defaults retuned accordingly (`--strength 1.0`, `--threshold
-  0.5`, `--gainmap-scale 2`).
+  0.5`, and `--gainmap-scale 1` — full-res, since raw mode carries real recovered
+  detail in the map; raise it for smaller files).
 - Gain map: per-channel colour is neutralized inside clipped highlights, so a
   blown white sky no longer picks up a colour cast in RGB gain maps while
   coloured, unclipped highlights keep their saturation (`NeutralizeHighlights`).

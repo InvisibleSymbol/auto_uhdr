@@ -114,7 +114,7 @@ func DefaultOptions() Options {
 		RampWidth:      0.35,
 		MaxBoost:       3.0,
 		GainMap:        GainMapLuminance,
-		GainMapScale:   2, // finer than the old 4: raw-boost carries real detail in the map
+		GainMapScale:   1, // full-res: raw-boost carries real recovered detail in the map
 		GainMapQuality: ultrahdr.DefaultOptions().GainMapQuality,
 	}
 }
