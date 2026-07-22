@@ -43,13 +43,19 @@ type Opts struct {
 	OutputColor int  // ColorSRGB, ...
 	Demosaic    int  // DemosaicAHD, ...
 	Highlight   int  // 0=clip,1=unclip,2=blend,3-9=reconstruct
+	// Flip is LibRaw's user_flip: 0 = no rotation (sensor-native), 3 = 180°,
+	// 5 = 90° CCW, 6 = 90° CW, -1 = apply the camera's EXIF orientation. Default 0
+	// so the decode stays in the same sensor-native orientation as the stored camera
+	// JPEG (which carries an EXIF flag rather than rotated pixels); anything else
+	// misaligns portrait frames against their JPEG.
+	Flip        int
 	HalfSize    bool // half-resolution decode (fast)
 	NoAutoScale bool // keep raw scaling (advanced)
 }
 
 // DefaultOpts returns sensible defaults for matching a camera JPEG.
 func DefaultOpts() Opts {
-	return Opts{Linear: false, UseCameraWB: true, OutputColor: ColorSRGB, Demosaic: DemosaicAHD, Highlight: 0}
+	return Opts{Linear: false, UseCameraWB: true, OutputColor: ColorSRGB, Demosaic: DemosaicAHD, Highlight: 0, Flip: 0}
 }
 
 // Meta carries basic decode metadata.
@@ -84,6 +90,7 @@ func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	lr.params.output_color = C.int(o.OutputColor)
 	lr.params.user_qual = C.int(o.Demosaic)
 	lr.params.highlight = C.int(o.Highlight)
+	lr.params.user_flip = C.int(o.Flip) // 0 = keep sensor-native orientation (match the JPEG)
 	if o.HalfSize {
 		lr.params.half_size = 1
 	}
