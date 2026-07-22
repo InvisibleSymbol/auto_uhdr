@@ -45,6 +45,16 @@ type Options struct {
 	// must be low-frequency (a smooth boost; the SDR carries the detail) or per-pixel gain
 	// discontinuities at edges produce halo/ringing artifacts when boosted. Default ~0.0025.
 	SmoothFrac float64
+
+	// NeutralizeHighlights (MultiChannel only) blends each channel's gain toward the
+	// luminance gain inside clipped highlights, over the linear-luma gate
+	// [NeutralizeLo, NeutralizeHi]. In a blown-out region the JPEG carries no reliable
+	// colour, so any per-channel gain there is a partial-clip artifact (a colour cast
+	// on a white sky); neutralizing it makes the RGB map behave like the luminance map
+	// exactly where per-channel colour cannot be trusted, while keeping full RGB colour
+	// for genuinely coloured, unclipped highlights. Default true.
+	NeutralizeHighlights       bool
+	NeutralizeLo, NeutralizeHi float64 // default 0.90..0.97 (matches the recovery gate)
 }
 
 // DefaultOptions returns spec-recommended defaults. SmoothFrac defaults to 0: gain-map smoothing
@@ -52,7 +62,8 @@ type Options struct {
 // detail). A small SmoothFrac remains available as a safety net if needed.
 func DefaultOptions() Options {
 	return Options{MultiChannel: false, MaxBoostStops: 3.0, Gamma: 1.0,
-		OffsetSDR: 1.0 / 64.0, OffsetHDR: 1.0 / 64.0, ScaleFactor: 1, SmoothFrac: 0}
+		OffsetSDR: 1.0 / 64.0, OffsetHDR: 1.0 / 64.0, ScaleFactor: 1, SmoothFrac: 0,
+		NeutralizeHighlights: true, NeutralizeLo: 0.90, NeutralizeHi: 0.97}
 }
 
 // Metadata is the hdrgm gain-map metadata (log2 domain).
@@ -96,27 +107,48 @@ func Compute(sdr, hdr *imaging.Image, o Options) (*GainMap, Metadata, error) {
 		nCh = 3
 	}
 
-	// Pass 1: find the max observed gain (per channel) to set maxLog2. Rows split
-	// across cores; each band folds into a local max merged once at the end.
+	gainLog2 := func(s, h float64) float64 {
+		return math.Log2((h + o.OffsetHDR) / (s + o.OffsetSDR))
+	}
+	// gainsAt returns the per-channel log2 gains at source pixel offset i, applying
+	// highlight neutralization when enabled. Single-channel returns the luminance
+	// gain in element 0. Both passes use it, so maxLog2 always bounds the encoded gains.
+	gainsAt := func(i int) [3]float64 {
+		if !o.MultiChannel {
+			return [3]float64{gainLog2(
+				lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2]),
+				lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2]))}
+		}
+		var g [3]float64
+		if o.NeutralizeHighlights {
+			ls := lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2])
+			gLum := gainLog2(ls, lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2]))
+			w := xmath.Smoothstep(o.NeutralizeLo, o.NeutralizeHi, ls)
+			for c := range 3 {
+				g[c] = xmath.Lerp(gainLog2(float64(sdr.Pix[i+c]), float64(hdr.Pix[i+c])), gLum, w)
+			}
+			return g
+		}
+		for c := range 3 {
+			g[c] = gainLog2(float64(sdr.Pix[i+c]), float64(hdr.Pix[i+c]))
+		}
+		return g
+	}
+
+	// Pass 1: max observed (possibly neutralized) gain per channel -> maxLog2. Rows
+	// split across cores; each band folds into a local max merged once at the end.
 	var maxObs [3]float64
 	var mu sync.Mutex
 	imaging.ParallelRows(H, func(y0, y1 int) {
 		var localMax [3]float64
 		for p := y0 * W; p < y1*W; p++ {
-			i := p * 3
-			if o.MultiChannel {
-				for c := range 3 {
-					g := math.Log2((float64(hdr.Pix[i+c]) + o.OffsetHDR) / (float64(sdr.Pix[i+c]) + o.OffsetSDR))
-					localMax[c] = max(localMax[c], g)
-				}
-			} else {
-				g := math.Log2((lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2]) + o.OffsetHDR) /
-					(lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2]) + o.OffsetSDR))
-				localMax[0] = max(localMax[0], g)
+			g := gainsAt(p * 3)
+			for c := range nCh {
+				localMax[c] = max(localMax[c], g[c])
 			}
 		}
 		mu.Lock()
-		for c := range 3 {
+		for c := range nCh {
 			maxObs[c] = max(maxObs[c], localMax[c])
 		}
 		mu.Unlock()
@@ -147,8 +179,7 @@ func Compute(sdr, hdr *imaging.Image, o Options) (*GainMap, Metadata, error) {
 	gh := (H + sf - 1) / sf
 	gm := &GainMap{W: gw, H: gh, Channels: nCh, Pix: make([]uint8, gw*gh*nCh)}
 
-	encodeChan := func(s, h float64, c int) float64 {
-		g := math.Log2((h + o.OffsetHDR) / (s + o.OffsetSDR))
+	encodeGain := func(g float64, c int) float64 {
 		lr := (g - meta.MinLog2[c]) / (meta.MaxLog2[c] - meta.MinLog2[c])
 		return math.Pow(xmath.Clamp01(lr), o.Gamma) * 255
 	}
@@ -168,15 +199,9 @@ func Compute(sdr, hdr *imaging.Image, o Options) (*GainMap, Metadata, error) {
 						if sx >= W {
 							break
 						}
-						i := (sy*W + sx) * 3
-						if o.MultiChannel {
-							for c := range 3 {
-								acc[c] += encodeChan(float64(sdr.Pix[i+c]), float64(hdr.Pix[i+c]), c)
-							}
-						} else {
-							acc[0] += encodeChan(
-								lum(sdr.Pix[i], sdr.Pix[i+1], sdr.Pix[i+2]),
-								lum(hdr.Pix[i], hdr.Pix[i+1], hdr.Pix[i+2]), 0)
+						g := gainsAt((sy*W + sx) * 3)
+						for c := range nCh {
+							acc[c] += encodeGain(g[c], c)
 						}
 						cnt++
 					}
