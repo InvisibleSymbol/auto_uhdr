@@ -1,19 +1,25 @@
-// Command showcase renders a 4-row grid over every ARW+JPEG pair in a directory:
+// Command showcase renders a 4-row grid over every ARW+JPEG pair in a directory
+// and writes it as a single real Ultra HDR (JPEG_R) file:
 //
 //	row 1  SDR (the camera JPEG)
-//	row 2  the RGB gain map (default settings)
-//	row 3  the Ultra HDR result, tonemapped to SDR for preview (ACES)
-//	row 4  the Ultra HDR result exposed down (−EV) to reveal recovered highlights
+//	row 2  the RGB gain map (what the tool adds), gamma-lifted for visibility
+//	row 3  the Ultra HDR result — this row carries a real gain map, so on an HDR
+//	       display it actually renders brighter; on SDR it matches row 1
+//	row 4  the HDR result exposed down (−EV), baked into SDR so viewers without an
+//	       HDR screen can still see the recovered highlight detail
 //
-// It visualizes what the tool does with a real reconstructed preview. Processing
-// is at reduced resolution (half-size decode) for speed.
+// The output is one Ultra HDR JPEG whose gain map is zero everywhere except the
+// row-3 tiles. Processing is at reduced resolution (half-size decode) for speed.
 //
-// usage: showcase [-ev f] <dir> <out.png>
+// usage: showcase [-ev f] <dir> <out.jpg>
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"math"
 	"os"
 	"path/filepath"
@@ -27,19 +33,20 @@ import (
 	"github.com/invis/arw2uhdr/internal/raw"
 	"github.com/invis/arw2uhdr/internal/register"
 	"github.com/invis/arw2uhdr/internal/sonylens"
+	"github.com/invis/arw2uhdr/internal/ultrahdr"
 )
 
 const (
 	boxW, boxH = 360, 260
 	gap        = 6
-	gutter     = 150 // left margin for row labels (added later)
+	gutter     = 190 // left margin for row labels
 )
 
 func main() {
 	ev := flag.Float64("ev", 2.0, "stops to expose down for row 4")
 	flag.Parse()
 	if flag.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: showcase [-ev f] <dir> <out.png>")
+		fmt.Fprintln(os.Stderr, "usage: showcase [-ev f] <dir> <out.jpg>")
 		os.Exit(2)
 	}
 	dir, out := flag.Arg(0), flag.Arg(1)
@@ -50,18 +57,108 @@ func main() {
 		os.Exit(1)
 	}
 	n := len(pairs)
-	grid := imaging.New(gutter+n*boxW+(n+1)*gap, 4*boxH+5*gap)
+
+	gridW := gutter + n*boxW + (n+1)*gap
+	gridH := 4*boxH + 5*gap
+	sdr := imaging.New(gridW, gridH)    // display SDR base grid
+	hdrLin := imaging.New(gridW, gridH) // linear HDR grid (row 3 lifted)
+
+	rowY := func(r int) int { return gap + r*(boxH+gap) }
+	colX := func(c int) int { return gutter + gap + c*(boxW+gap) }
+
+	all := make([]tiles, n)
 	for col, pr := range pairs {
 		fmt.Printf("[%d/%d] %s\n", col+1, n, filepath.Base(pr.arw))
-		tiles := process(pr, *ev)
-		for row := range 4 {
-			x := gutter + gap + col*(boxW+gap)
-			y := gap + row*(boxH+gap)
-			blit(grid, tiles[row], x, y)
-		}
+		t := process(pr, *ev)
+		all[col] = t
+		x := colX(col)
+		// SDR base: row1 SDR, row2 gain map, row3 SDR (same base), row4 exposed.
+		blit(sdr, t.sdrDisp, x, rowY(0))
+		blit(sdr, t.gainViz, x, rowY(1))
+		blit(sdr, t.sdrDisp, x, rowY(2))
+		blit(sdr, t.exposed, x, rowY(3))
 	}
-	must(grid.SavePNG8(out))
-	fmt.Println("wrote", out)
+
+	drawLabels(sdr)
+
+	// HDR grid = the linearized SDR everywhere (gain 0), with the real HDR spliced
+	// into the row-3 tiles so only that row lifts on an HDR display.
+	for i := range hdrLin.Pix {
+		hdrLin.Pix[i] = color.SRGBDecode(sdr.Pix[i])
+	}
+	for col := range pairs {
+		blit(hdrLin, all[col].hdrLin, colX(col), rowY(2))
+	}
+
+	// Encode the SDR grid as the base JPEG, compute the gain map from the grids.
+	base := encodeJPEG(sdr, 92)
+	sdrGridLin := imaging.New(gridW, gridH)
+	for i := range sdrGridLin.Pix {
+		sdrGridLin.Pix[i] = color.SRGBDecode(sdr.Pix[i])
+	}
+	gmo := gainmap.DefaultOptions()
+	gmo.MultiChannel = true
+	gmo.ScaleFactor = 1
+	gmo.NeutralizeHighlights = false
+	gm, meta, err := gainmap.Compute(sdrGridLin, hdrLin, gmo)
+	must(err)
+	uhdr, err := ultrahdr.Encode(base, gm, meta, ultrahdr.DefaultOptions())
+	must(err)
+	must(os.WriteFile(out, uhdr, 0o644))
+	if err := ultrahdr.Verify(uhdr); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: verify:", err)
+	}
+	fmt.Printf("wrote %s (%d KB, Ultra HDR — row 3 renders as HDR)\n", out, len(uhdr)/1024)
+}
+
+type tiles struct {
+	sdrDisp, gainViz, exposed, hdrLin *imaging.Image
+}
+
+func process(pr pair, ev float64) tiles {
+	ro := raw.DefaultOpts()
+	ro.Linear = true
+	ro.Highlight = 2
+	ro.HalfSize = true
+	img, _, err := raw.Decode(pr.arw, ro)
+	must(err)
+	cp, err := sonylens.ReadARW(pr.arw)
+	must(err)
+	warped := sonylens.Warp(img, cp, sonylens.DefaultWarp())
+
+	jpg, err := imaging.LoadImage(pr.jpg)
+	must(err)
+	if jpg.W > 1400 {
+		jpg = jpg.Resize(1400, jpg.H*1400/jpg.W)
+	}
+	sdrLin := imaging.New(jpg.W, jpg.H)
+	for i := range sdrLin.Pix {
+		sdrLin.Pix[i] = color.SRGBDecode(jpg.Pix[i])
+	}
+	rawA := warped.Resize(jpg.W, jpg.H)
+	aff := register.Estimate(jpg, rawA, register.Options{})
+	rawA = aff.Apply(rawA, jpg.W, jpg.H)
+
+	ho := hdrbuild.DefaultOptions()
+	ho.Mode = hdrbuild.ModeRawBoost
+	ho.Strength, ho.Threshold, ho.ChromaStrength = 1, 0.5, 0.3
+	hdr, _ := hdrbuild.Build(sdrLin, rawA, ho)
+
+	gmo := gainmap.DefaultOptions()
+	gmo.MultiChannel = true
+	gmo.ScaleFactor = 1
+	gmo.NeutralizeHighlights = false
+	gmViz, _, err := gainmap.Compute(sdrLin, hdr, gmo)
+	must(err)
+
+	o := cp.Orientation
+	sdrLinTile := fit(orient(sdrLin, o)) // linear
+	return tiles{
+		sdrDisp: srgb(sdrLinTile), // display base (rows 1 & 3)
+		gainViz: fit(orient(gammaLift(gmViz.ToImage()), o)),
+		exposed: fit(orient(exposeSRGB(hdr, ev), o)),
+		hdrLin:  fit(orient(hdr, o)), // linear HDR (row 3 lift)
+	}
 }
 
 type pair struct{ arw, jpg string }
@@ -85,81 +182,14 @@ func discover(dir string) []pair {
 	return ps
 }
 
-// process returns the four display-space tiles for one pair.
-func process(pr pair, ev float64) [4]*imaging.Image {
-	ro := raw.DefaultOpts()
-	ro.Linear = true
-	ro.Highlight = 2
-	ro.HalfSize = true // speed: half-res decode is plenty for small tiles
-	img, _, err := raw.Decode(pr.arw, ro)
-	must(err)
-	cp, err := sonylens.ReadARW(pr.arw)
-	must(err)
-	warped := sonylens.Warp(img, cp, sonylens.DefaultWarp())
-
-	jpg, err := imaging.LoadImage(pr.jpg)
-	must(err)
-	if jpg.W > 1400 { // work small for speed
-		jpg = jpg.Resize(1400, jpg.H*1400/jpg.W)
-	}
-	sdrLin := imaging.New(jpg.W, jpg.H)
-	for i := range sdrLin.Pix {
-		sdrLin.Pix[i] = color.SRGBDecode(jpg.Pix[i])
-	}
-	rawA := warped.Resize(jpg.W, jpg.H)
-	aff := register.Estimate(jpg, rawA, register.Options{})
-	rawA = aff.Apply(rawA, jpg.W, jpg.H)
-
-	// default rendering: raw mode, chroma 0.3, RGB gain map
-	ho := hdrbuild.DefaultOptions()
-	ho.Mode = hdrbuild.ModeRawBoost
-	ho.Strength, ho.Threshold, ho.ChromaStrength = 1, 0.5, 0.3
-	hdr, _ := hdrbuild.Build(sdrLin, rawA, ho)
-
-	gmo := gainmap.DefaultOptions()
-	gmo.MultiChannel = true
-	gmo.ScaleFactor = 1
-	gmo.NeutralizeHighlights = false
-	gm, meta, err := gainmap.Compute(sdrLin, hdr, gmo)
-	must(err)
-	hdrR := gainmap.Reconstruct(sdrLin, gm, meta, 1.0) // linear HDR, the true round-trip
-
-	o := cp.Orientation
-	t1 := fit(orient(jpg, o))                     // SDR (already display)
-	t2 := fit(orient(gammaLift(gm.ToImage()), o)) // gain map (brightened for visibility)
-	t3 := fit(orient(tonemapHighlights(hdrR), o)) // HDR preview (display)
-	t4 := fit(orient(exposeSRGB(hdrR, ev), o))    // exposed for highlights (display)
-	return [4]*imaging.Image{t1, t2, t3, t4}
-}
-
-// tonemapHighlights keeps midtones/shadows exactly as the SDR (identity below a
-// knee) and rolls off the extended-range highlights into the remaining headroom,
-// so the recovered highlight detail becomes visible without darkening the image.
-func tonemapHighlights(hdr *imaging.Image) *imaging.Image {
-	out := imaging.New(hdr.W, hdr.H)
-	const t = 0.8
-	f := func(v float64) float64 {
-		if v <= t {
-			return v
-		}
-		return t + (1-t)*(1-math.Exp(-(v-t)/(1-t)))
-	}
-	for i := range hdr.Pix {
-		out.Pix[i] = color.SRGBEncode(float32(f(float64(hdr.Pix[i]))))
+func srgb(lin *imaging.Image) *imaging.Image {
+	out := imaging.New(lin.W, lin.H)
+	for i := range lin.Pix {
+		out.Pix[i] = color.SRGBEncode(lin.Pix[i])
 	}
 	return out
 }
 
-// gammaLift brightens a display-space image (for the mostly-dark gain map).
-func gammaLift(im *imaging.Image) *imaging.Image {
-	out := imaging.New(im.W, im.H)
-	for i := range im.Pix {
-		out.Pix[i] = float32(math.Pow(float64(im.Pix[i]), 0.55))
-	}
-	return out
-}
-
-// exposeSRGB multiplies linear HDR by 2^-ev, clamps, and sRGB-encodes for display.
 func exposeSRGB(hdr *imaging.Image, ev float64) *imaging.Image {
 	out := imaging.New(hdr.W, hdr.H)
 	scale := float32(math.Exp2(-ev))
@@ -169,7 +199,14 @@ func exposeSRGB(hdr *imaging.Image, ev float64) *imaging.Image {
 	return out
 }
 
-// fit scales im to fit within the tile box, centered on black.
+func gammaLift(im *imaging.Image) *imaging.Image {
+	out := imaging.New(im.W, im.H)
+	for i := range im.Pix {
+		out.Pix[i] = float32(math.Pow(float64(im.Pix[i]), 0.55))
+	}
+	return out
+}
+
 func fit(im *imaging.Image) *imaging.Image {
 	s := math.Min(float64(boxW)/float64(im.W), float64(boxH)/float64(im.H))
 	nw, nh := max(1, int(float64(im.W)*s)), max(1, int(float64(im.H)*s))
@@ -218,6 +255,79 @@ func orient(im *imaging.Image, o int) *imaging.Image {
 		return dst
 	}
 	return im
+}
+
+// minimal 5x7 uppercase bitmap font (low 5 bits per row).
+var glyphs = map[rune][7]uint8{
+	'A': {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}, 'B': {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E},
+	'C': {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}, 'D': {0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E},
+	'E': {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}, 'F': {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10},
+	'G': {0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F}, 'H': {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11},
+	'I': {0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E}, 'J': {0x07, 0x02, 0x02, 0x02, 0x02, 0x12, 0x0C},
+	'K': {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}, 'L': {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F},
+	'M': {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}, 'N': {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11},
+	'O': {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, 'P': {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10},
+	'Q': {0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D}, 'R': {0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11},
+	'S': {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}, 'T': {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04},
+	'U': {0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}, 'V': {0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04},
+	'W': {0x11, 0x11, 0x11, 0x15, 0x15, 0x1B, 0x11}, 'X': {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11},
+	'Y': {0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04}, 'Z': {0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F},
+	' ': {0, 0, 0, 0, 0, 0, 0}, '-': {0, 0, 0, 0x1F, 0, 0, 0},
+}
+
+func drawText(im *imaging.Image, s string, x, y, scale int, r, g, b float32) {
+	cx := x
+	for _, ch := range s {
+		gl, ok := glyphs[ch]
+		if !ok {
+			gl = glyphs[' ']
+		}
+		for row := range 7 {
+			bits := gl[row]
+			for col := range 5 {
+				if bits&(1<<uint(4-col)) != 0 {
+					for dy := range scale {
+						for dx := range scale {
+							im.Set(cx+col*scale+dx, y+row*scale+dy, r, g, b)
+						}
+					}
+				}
+			}
+		}
+		cx += 6 * scale
+	}
+}
+
+func drawLabels(im *imaging.Image) {
+	labels := []string{"SDR", "GAIN MAP", "ULTRA HDR", "EXPOSED"}
+	for r, s := range labels {
+		y := gap + r*(boxH+gap) + boxH/2 - 11
+		drawText(im, s, 10, y, 3, 0.95, 0.95, 0.95)
+	}
+}
+
+func encodeJPEG(im *imaging.Image, q int) []byte {
+	rgba := image.NewRGBA(image.Rect(0, 0, im.W, im.H))
+	clamp := func(v float32) uint8 {
+		if v <= 0 {
+			return 0
+		}
+		if v >= 1 {
+			return 255
+		}
+		return uint8(v*255 + 0.5)
+	}
+	for p := 0; p < im.W*im.H; p++ {
+		rgba.Pix[p*4] = clamp(im.Pix[p*3])
+		rgba.Pix[p*4+1] = clamp(im.Pix[p*3+1])
+		rgba.Pix[p*4+2] = clamp(im.Pix[p*3+2])
+		rgba.Pix[p*4+3] = 255
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: q}); err != nil {
+		must(err)
+	}
+	return buf.Bytes()
 }
 
 func must(err error) {
