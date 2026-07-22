@@ -9,6 +9,11 @@ A ground-up refactor for maintainability and idiomatic, modern (Go 1.24) style,
 plus a new default rendering and two correctness fixes to the highlight path.
 
 ### Rendering
+- `--raw-lift` (raw mode, default 0): layers a neutral, luma-driven synthetic boost
+  (in stops) on top of the RAW recovery. Unlike the recovery — which is zero wherever
+  the JPEG wasn't clipped — this lifts unclipped mid-highlights too, riding the same
+  JPEG-luma gate so `--threshold` still masks the shadows and reaches further down as
+  it drops. Neutral (equal per channel), so it brightens without shifting colour.
 - `--boost-curve` (raw mode, default 0): reshapes the RAW-derived recovery from
   linear toward logarithmic. The recovered gain is remapped by `log(1+b·t)/log(1+b)`
   over its `0..--max-boost` range, a concave curve that lifts partially-clipped

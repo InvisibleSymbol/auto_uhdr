@@ -84,6 +84,13 @@ type Options struct {
 	// Endpoints are fixed (no gain stays no gain; a fully-clipped pixel still reaches the ceiling).
 	BoostCurve float64
 
+	// SynthLift (ModeRawBoost only) layers a neutral, luma-driven synthetic boost on top of the
+	// RAW recovery, in stops at the gate plateau. Unlike the recovery (which is zero wherever the
+	// JPEG wasn't clipped), this lifts unclipped mid-highlights too — it rides the same JPEG-luma
+	// gate, so Threshold still masks the shadows and lowering it reaches further down the range.
+	// Default 0 (off). It is neutral (equal per channel), so it brightens without shifting colour.
+	SynthLift float64
+
 	MaxBoostStops float64 // ceiling on total boost, in stops (default 3.0)
 }
 
@@ -248,7 +255,9 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 					rgC := xmath.Clamp(math.Log2((rv+eps)/(s+eps)), 0, o.MaxBoostStops)
 					rg := xmath.Lerp(rgLum, rgC, cEff) // neutral..per-channel
 					rg = logBoostCurve(rg, o.MaxBoostStops, o.BoostCurve)
-					out.Pix[i+c] = float32(softShoulder(s*math.Exp2(rg*gate*strength), o.MaxBoostStops))
+					// RAW recovery plus an optional neutral synthetic lift, both under the JPEG gate.
+					e := (rg*strength + o.SynthLift) * gate
+					out.Pix[i+c] = float32(softShoulder(s*math.Exp2(e), o.MaxBoostStops))
 				}
 			}
 		})

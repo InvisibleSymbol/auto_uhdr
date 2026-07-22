@@ -160,3 +160,30 @@ func TestLogBoostCurveShape(t *testing.T) {
 		t.Errorf("expected mid lift increasing with b: lin=%v b2=%v b6=%v", lin, low, high)
 	}
 }
+
+func TestRawLiftBrightensUnclippedMidHighlights(t *testing.T) {
+	// raw == sdr, so there is nothing to recover: any brightening must come from the lift.
+	sdr, raw := pair(0.7) // an upper-midtone above the gate
+	o := DefaultOptions()
+	o.Mode = ModeRawBoost
+	o.Strength = 1
+	o.Threshold = 0.5
+
+	base, _ := Build(sdr, raw, o) // no lift: unclipped midtone is untouched
+	if d := math.Abs(float64(base.Pix[0] - sdr.Pix[0])); d > 1e-3 {
+		t.Fatalf("baseline changed an unclipped midtone: %.3f", base.Pix[0])
+	}
+
+	o.SynthLift = 1 // ~1 stop at the plateau
+	lifted, _ := Build(sdr, raw, o)
+	if !(lifted.Pix[0] > base.Pix[0]+1e-2) {
+		t.Errorf("raw-lift did not brighten an unclipped midtone: base=%.3f lifted=%.3f", base.Pix[0], lifted.Pix[0])
+	}
+
+	// A shadow below the threshold must stay masked (no dark->bright glow).
+	sdrS, rawS := pair(0.1)
+	shadow, _ := Build(sdrS, rawS, o)
+	if shadow.Pix[0] > 0.12 {
+		t.Errorf("raw-lift leaked into shadows: %.3f", shadow.Pix[0])
+	}
+}

@@ -100,6 +100,9 @@ type Options struct {
 	// BoostCurve (raw mode) reshapes the RAW-derived boost from linear (0) toward logarithmic (>0),
 	// lifting partially-clipped mid-highlights up toward the recovery ceiling. 0 = linear (default).
 	BoostCurve float64
+	// RawLift (raw mode) layers a neutral synthetic luma boost on top of the RAW recovery, in stops
+	// at the gate plateau, brightening unclipped mid-highlights too (gated by Threshold). 0 = off.
+	RawLift float64
 
 	// Gain map + container
 	GainMap        GainMapMode
@@ -126,6 +129,7 @@ func DefaultOptions() Options {
 		MaxBoost:       3.0,
 		Chroma:         0.3,        // gentle per-channel colour; 0 = neutral, 1 = full recovery
 		BoostCurve:     0,          // linear recovery; raise for a log-like lift of the mid-highlights
+		RawLift:        0,          // no synthetic lift; raise to brighten unclipped mid-highlights
 		GainMap:        GainMapRGB, // so the Chroma dial takes effect by default
 		GainMapScale:   1,          // full-res: raw-boost carries real recovered detail in the map
 		GainMapQuality: ultrahdr.DefaultOptions().GainMapQuality,
@@ -169,6 +173,7 @@ func (o Options) hdrOptions() hdrbuild.Options {
 	ho.ChromaStrength = o.Chroma
 	ho.ChromaTrack = o.ChromaTrack
 	ho.BoostCurve = o.BoostCurve
+	ho.SynthLift = o.RawLift
 	return ho
 }
 

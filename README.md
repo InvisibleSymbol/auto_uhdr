@@ -80,6 +80,7 @@ Key `convert` / `batch` flags:
 | `--chroma` | 0.3 | RGB gain saturation, 0..1 (0 = neutral, 1 = full per-channel colour) |
 | `--chroma-track` | off | ramp `--chroma` with JPEG brightness (neutral midtones, full colour in highlights) |
 | `--boost-curve` | 0 | raw mode: log-shape the boost, lifting recovered mid-highlights toward the ceiling (0 = linear) |
+| `--raw-lift` | 0 | raw mode: synthetic luma lift (stops) on top of recovery, brightens unclipped mid-highlights (gated by `--threshold`) |
 | `--gainmap` | rgb | `rgb` (per-channel colour) or `single` (luminance) |
 | `--gainmap-scale` | 1 | gain-map downsample factor (raise for smaller files) |
 | `--lens` | distortion+ca | `distortion+ca`, `distortion`, or `off` |
