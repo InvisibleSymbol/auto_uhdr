@@ -27,6 +27,7 @@ type convertFlags struct {
 	noRegister  bool
 	chroma      float64
 	chromaTrack bool
+	boostCurve  float64
 
 	verbose bool
 }
@@ -48,6 +49,7 @@ func (c *convertFlags) register(fs *flag.FlagSet) {
 	fs.BoolVar(&c.noRegister, "no-register", false, "skip residual registration (debug)")
 	fs.Float64Var(&c.chroma, "chroma", d.Chroma, "raw mode RGB gain saturation 0..1 (0 = neutral, 1 = full per-channel)")
 	fs.BoolVar(&c.chromaTrack, "chroma-track", d.ChromaTrack, "ramp --chroma with JPEG brightness (peak in clipped highlights)")
+	fs.Float64Var(&c.boostCurve, "boost-curve", d.BoostCurve, "raw mode: log-shape the boost, lifting mid-highlights toward the ceiling (0 = linear)")
 	fs.BoolVar(&c.verbose, "v", false, "verbose progress to stderr")
 }
 
@@ -109,6 +111,7 @@ func (c *convertFlags) options() (arw2uhdr.Options, error) {
 	o.NoNeutralize = !c.neutralize
 	o.Chroma = c.chroma
 	o.ChromaTrack = c.chromaTrack
+	o.BoostCurve = c.boostCurve
 	if c.verbose {
 		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}

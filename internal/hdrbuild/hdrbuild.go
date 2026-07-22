@@ -77,6 +77,13 @@ type Options struct {
 	// the JPEG lost colour. With this on, ChromaStrength is the PEAK reached at clipping.
 	ChromaTrack bool
 
+	// BoostCurve (ModeRawBoost only) reshapes the raw-derived gain from linear (0) toward
+	// logarithmic (>0). The recovered gain, over its 0..MaxBoostStops range, is remapped by
+	// log(1+b·t)/log(1+b), a concave curve that lifts partially-clipped mid-highlights up toward the
+	// recovery ceiling while the top compresses. 0 = current linear recovery; larger = more lift.
+	// Endpoints are fixed (no gain stays no gain; a fully-clipped pixel still reaches the ceiling).
+	BoostCurve float64
+
 	MaxBoostStops float64 // ceiling on total boost, in stops (default 3.0)
 }
 
@@ -138,6 +145,18 @@ func softShoulder(v, maxStops float64) float64 {
 	span := maxStops - knee
 	lp := knee + span*math.Tanh((lv-knee)/span)
 	return math.Exp2(lp)
+}
+
+// logBoostCurve remaps a recovery gain g (in stops, 0..maxStops) from linear toward logarithmic as
+// b rises: with t = g/maxStops, it returns maxStops·log(1+b·t)/log(1+b). b ≤ 0 is the identity. The
+// curve is concave, so mid-level gains are lifted toward the ceiling (partially-clipped highlights
+// pushed up), while the endpoints are fixed (0→0, maxStops→maxStops).
+func logBoostCurve(g, maxStops, b float64) float64 {
+	if b <= 0 || maxStops <= 0 {
+		return g
+	}
+	t := xmath.Clamp01(g / maxStops)
+	return maxStops * math.Log1p(b*t) / math.Log1p(b)
 }
 
 // guidedFilter runs a standard (box-window) guided filter of p with guide I.
@@ -228,6 +247,7 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 					rv := float64(rawLin.Pix[i+c]) * k[c]
 					rgC := xmath.Clamp(math.Log2((rv+eps)/(s+eps)), 0, o.MaxBoostStops)
 					rg := xmath.Lerp(rgLum, rgC, cEff) // neutral..per-channel
+					rg = logBoostCurve(rg, o.MaxBoostStops, o.BoostCurve)
 					out.Pix[i+c] = float32(softShoulder(s*math.Exp2(rg*gate*strength), o.MaxBoostStops))
 				}
 			}

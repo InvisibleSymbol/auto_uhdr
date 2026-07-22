@@ -97,6 +97,9 @@ type Options struct {
 	// ChromaTrack scales Chroma by JPEG brightness so per-channel colour recovery ramps in with
 	// clipping (neutral midtones, full Chroma in the blown highlights). Chroma becomes the peak.
 	ChromaTrack bool
+	// BoostCurve (raw mode) reshapes the RAW-derived boost from linear (0) toward logarithmic (>0),
+	// lifting partially-clipped mid-highlights up toward the recovery ceiling. 0 = linear (default).
+	BoostCurve float64
 
 	// Gain map + container
 	GainMap        GainMapMode
@@ -122,6 +125,7 @@ func DefaultOptions() Options {
 		RampWidth:      0.35,
 		MaxBoost:       3.0,
 		Chroma:         0.3,        // gentle per-channel colour; 0 = neutral, 1 = full recovery
+		BoostCurve:     0,          // linear recovery; raise for a log-like lift of the mid-highlights
 		GainMap:        GainMapRGB, // so the Chroma dial takes effect by default
 		GainMapScale:   1,          // full-res: raw-boost carries real recovered detail in the map
 		GainMapQuality: ultrahdr.DefaultOptions().GainMapQuality,
@@ -164,6 +168,7 @@ func (o Options) hdrOptions() hdrbuild.Options {
 	ho.MaxBoostStops = o.MaxBoost
 	ho.ChromaStrength = o.Chroma
 	ho.ChromaTrack = o.ChromaTrack
+	ho.BoostCurve = o.BoostCurve
 	return ho
 }
 

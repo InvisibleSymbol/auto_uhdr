@@ -136,3 +136,27 @@ func TestStrengthIntensifiesBrights(t *testing.T) {
 		t.Errorf("higher strength did not intensify: strong=%.3f weak=%.3f", strong.Pix[0], weak.Pix[0])
 	}
 }
+
+func TestLogBoostCurveShape(t *testing.T) {
+	const maxStops = 3.0
+	// Endpoints are fixed for any b.
+	for _, b := range []float64{0, 2, 6} {
+		if got := logBoostCurve(0, maxStops, b); got != 0 {
+			t.Errorf("b=%v: logBoostCurve(0)=%v, want 0", b, got)
+		}
+		if got := logBoostCurve(maxStops, maxStops, b); math.Abs(got-maxStops) > 1e-9 {
+			t.Errorf("b=%v: logBoostCurve(max)=%v, want %v", b, got, maxStops)
+		}
+	}
+	// b=0 is the identity.
+	if got := logBoostCurve(1.5, maxStops, 0); got != 1.5 {
+		t.Errorf("b=0 not identity: %v", got)
+	}
+	// b>0 lifts a mid gain, and lifts more as b grows (concave, monotonic in b).
+	lin := 1.5
+	low := logBoostCurve(1.5, maxStops, 2)
+	high := logBoostCurve(1.5, maxStops, 6)
+	if !(low > lin && high > low) {
+		t.Errorf("expected mid lift increasing with b: lin=%v b2=%v b6=%v", lin, low, high)
+	}
+}

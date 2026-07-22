@@ -9,6 +9,12 @@ A ground-up refactor for maintainability and idiomatic, modern (Go 1.24) style,
 plus a new default rendering and two correctness fixes to the highlight path.
 
 ### Rendering
+- `--boost-curve` (raw mode, default 0): reshapes the RAW-derived recovery from
+  linear toward logarithmic. The recovered gain is remapped by `log(1+b·t)/log(1+b)`
+  over its `0..--max-boost` range, a concave curve that lifts partially-clipped
+  mid-highlights up toward the recovery ceiling while the top compresses. Endpoints
+  are fixed (no gain stays no gain; a fully-clipped pixel still reaches the ceiling),
+  so it stays a faithful RAW recovery — just weighted toward the mid-highlights.
 - New default `--hdr-mode raw`: a JPEG-gated, RAW-luminance-driven boost. The
   boost magnitude comes from how much brighter the RAW is than the JPEG (per
   channel), so bright surfaces lift by their real scene luminance and clipped
