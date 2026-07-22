@@ -16,11 +16,16 @@
 // The output is one Ultra HDR JPEG whose gain map is zero everywhere except the
 // row-3 tiles. Processing is at reduced resolution (half-size decode) for speed.
 //
-// usage: showcase [-peak p] <dir> <out.jpg>
+// It accepts the full set of convert/batch flags (e.g. --hdr-mode, --strength,
+// --threshold, --chroma, --boost-curve, --raw-lift, --lens) so rows 3 and 4 reflect
+// the exact rendition the CLI would produce, plus its own row-4/layout flags below.
+//
+// usage: showcase [convert flags] [-scale s] [-peak p] [-white w] [-agg a] <dir> <out.jpg>
 package main
 
 import (
 	"bytes"
+	"context"
 	"flag"
 	"fmt"
 	"image"
@@ -31,9 +36,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/invis/arw2uhdr"
+	"github.com/invis/arw2uhdr/internal/cli"
 	"github.com/invis/arw2uhdr/internal/color"
 	"github.com/invis/arw2uhdr/internal/gainmap"
-	"github.com/invis/arw2uhdr/internal/hdrbuild"
 	"github.com/invis/arw2uhdr/internal/imaging"
 	"github.com/invis/arw2uhdr/internal/raw"
 	"github.com/invis/arw2uhdr/internal/register"
@@ -54,6 +60,8 @@ var (
 const labelPad = 10 // margin left of the label and between label and first tile
 
 func main() {
+	// Accept the full convert/batch flag set so the rows reflect the same rendition the CLI produces.
+	resolveConvert := cli.RegisterConvertFlags(flag.CommandLine)
 	peakPct := flag.Float64("peak", 0.995, "row-4 highlight-peak percentile (hot-pixel-robust)")
 	white := flag.Float64("white", 0.75, "row-4 SDR white point: display level SDR-white squishes to, reserving [white,1] for HDR")
 	agg := flag.Float64("agg", 4, "row-4 HDR-shoulder S steepness (higher = quicker mid-transition; smooth join + smooth max-out)")
@@ -61,9 +69,11 @@ func main() {
 	scale := flag.Float64("scale", 1, "output resolution multiplier (2 = double-size tiles, crisper)")
 	flag.Parse()
 	if flag.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: showcase [-scale s] [-peak p] [-white w] [-agg a] <dir> <out.jpg>")
+		fmt.Fprintln(os.Stderr, "usage: showcase [convert flags] [-scale s] [-peak p] [-white w] [-agg a] <dir> <out.jpg>")
 		os.Exit(2)
 	}
+	opts, err := resolveConvert()
+	must(err)
 	applyScale(*scale)
 	tone := toneParams{peakPct: *peakPct, white: *white, agg: *agg}
 	dir, out := flag.Arg(0), flag.Arg(1)
@@ -86,7 +96,7 @@ func main() {
 	all := make([]tiles, n)
 	for col, pr := range pairs {
 		fmt.Printf("[%d/%d] %s\n", col+1, n, filepath.Base(pr.arw))
-		t := process(pr, tone)
+		t := process(pr, tone, opts)
 		all[col] = t
 		x := colX(col)
 		// SDR base: row1 SDR, row2 gain map, row3 SDR (same base), row4 exposed.
@@ -134,16 +144,21 @@ type tiles struct {
 
 type toneParams struct{ peakPct, white, agg float64 }
 
-func process(pr pair, tone toneParams) tiles {
+func process(pr pair, tone toneParams, opts arw2uhdr.Options) tiles {
+	ctx := context.Background()
+	conv := arw2uhdr.New(opts) // configured stages: corrector (lens), renderer (all HDR dials)
+
 	ro := raw.DefaultOpts()
 	ro.Linear = true
 	ro.Highlight = 2
-	ro.HalfSize = true
+	ro.HalfSize = true // reduced-resolution decode for showcase speed
+	ro.Demosaic = librawDemosaic(opts.Demosaic)
 	img, _, err := raw.Decode(pr.arw, ro)
 	must(err)
 	cp, err := sonylens.ReadARW(pr.arw)
 	must(err)
-	warped := sonylens.Warp(img, cp, sonylens.DefaultWarp())
+	warped, err := conv.Corrector.Correct(ctx, img, pr.arw) // honours --lens / --vignetting
+	must(err)
 
 	jpg, err := imaging.LoadImage(pr.jpg)
 	must(err)
@@ -158,18 +173,19 @@ func process(pr pair, tone toneParams) tiles {
 		sdrLin.Pix[i] = color.SRGBDecode(jpg.Pix[i])
 	}
 	rawA := warped.Resize(jpg.W, jpg.H)
-	aff := register.Estimate(jpg, rawA, register.Options{})
-	rawA = aff.Apply(rawA, jpg.W, jpg.H)
+	if opts.Register {
+		aff := register.Estimate(jpg, rawA, register.Options{})
+		rawA = aff.Apply(rawA, jpg.W, jpg.H)
+	}
 
-	ho := hdrbuild.DefaultOptions()
-	ho.Mode = hdrbuild.ModeRawBoost
-	ho.Strength, ho.Threshold, ho.ChromaStrength = 1, 0.5, 0.3
-	hdr, _ := hdrbuild.Build(sdrLin, rawA, ho)
+	hdr, err := conv.Renderer.Render(ctx, sdrLin, rawA) // --hdr-mode, --strength, --raw-lift, …
+	must(err)
 
 	gmo := gainmap.DefaultOptions()
-	gmo.MultiChannel = true
-	gmo.ScaleFactor = 1
-	gmo.NeutralizeHighlights = false
+	gmo.MultiChannel = opts.GainMap == arw2uhdr.GainMapRGB
+	gmo.ScaleFactor = 1 // full-res for the viz row
+	gmo.NeutralizeHighlights = !opts.NoNeutralize
+	gmo.MaxBoostStops = opts.MaxBoost
 	gmViz, _, err := gainmap.Compute(sdrLin, hdr, gmo)
 	must(err)
 
@@ -180,6 +196,25 @@ func process(pr pair, tone toneParams) tiles {
 		gainViz: fit(orient(gammaLift(gmViz.ToImage()), o)),
 		exposed: fit(orient(tonemapInvHLG(hdr, tone), o)),
 		hdrLin:  fit(orient(hdr, o)), // linear HDR (row 3 lift)
+	}
+}
+
+// librawDemosaic maps the public --demosaic choice to the LibRaw algorithm id used by the
+// reduced-resolution showcase decode (which builds raw.Opts directly rather than via the library).
+func librawDemosaic(d arw2uhdr.Demosaic) int {
+	switch d {
+	case arw2uhdr.DemosaicDCB:
+		return raw.DemosaicDCB
+	case arw2uhdr.DemosaicDHT:
+		return raw.DemosaicDHT
+	case arw2uhdr.DemosaicVNG:
+		return raw.DemosaicVNG
+	case arw2uhdr.DemosaicPPG:
+		return raw.DemosaicPPG
+	case arw2uhdr.DemosaicLinear:
+		return raw.DemosaicLinear
+	default:
+		return raw.DemosaicAHD
 	}
 }
 

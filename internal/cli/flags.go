@@ -33,6 +33,15 @@ type convertFlags struct {
 	verbose bool
 }
 
+// RegisterConvertFlags adds the shared convert/batch conversion knobs to fs and returns a resolver
+// that produces the Options once fs has been parsed. It lets other commands (e.g. tools/showcase)
+// accept the exact same conversion flags without duplicating their definitions.
+func RegisterConvertFlags(fs *flag.FlagSet) func() (arw2uhdr.Options, error) {
+	c := &convertFlags{}
+	c.register(fs)
+	return c.options
+}
+
 func (c *convertFlags) register(fs *flag.FlagSet) {
 	d := arw2uhdr.DefaultOptions()
 	fs.StringVar(&c.hdrMode, "hdr-mode", "raw", "raw | highlight | develop")

@@ -97,3 +97,27 @@ func TestConvertUsageErrors(t *testing.T) {
 		t.Errorf("verify without args should be a usage error, got %v", err)
 	}
 }
+
+func TestRegisterConvertFlags(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	resolve := RegisterConvertFlags(fs)
+	if err := fs.Parse([]string{"-raw-lift", "0.7", "-threshold", "0.5", "-boost-curve", "3"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	o, err := resolve()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.RawLift != 0.7 || o.Threshold != 0.5 || o.BoostCurve != 3 {
+		t.Errorf("shared convert flags not resolved: %+v", o)
+	}
+	// Defaults still match DefaultOptions when nothing is passed.
+	fs2 := flag.NewFlagSet("t2", flag.ContinueOnError)
+	r2 := RegisterConvertFlags(fs2)
+	_ = fs2.Parse(nil)
+	o2, _ := r2()
+	if o2.Strength != arw2uhdr.DefaultOptions().Strength {
+		t.Errorf("defaults diverge: %+v", o2)
+	}
+}
