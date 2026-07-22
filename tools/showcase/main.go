@@ -234,17 +234,21 @@ func tonemapInvHLG(hdr *imaging.Image, tone toneParams) *imaging.Image {
 		maxes[p] = max(float64(hdr.Pix[i]), float64(hdr.Pix[i+1]), float64(hdr.Pix[i+2]))
 	}
 	sort.Float64s(maxes)
-	idx := int(float64(n-1) * min(max(tone.peakPct, 0), 1))
-	peak := max(maxes[idx], 1)
+	pct := func(p float64) float64 { return maxes[int(float64(n-1)*min(max(p, 0), 1))] }
 
-	// Reserve headroom only in proportion to how far the tile actually exceeds SDR
-	// (full squish once the peak is ≥ ~0.6 stop over white); an all-SDR tile keeps
-	// white = 1 and renders as the plain JPEG.
-	hdrAmt := min(max((peak-1)/0.5, 0), 1)
+	// Brightness/squish is driven by the peakPct percentile, so a low-HDR tile stays
+	// bright; reserve headroom only in proportion to how far it exceeds SDR (full
+	// squish once ≥ ~0.6 stop over white). An all-SDR tile keeps white = 1.
+	whitePeak := max(pct(tone.peakPct), 1)
+	hdrAmt := min(max((whitePeak-1)/0.5, 0), 1)
 	white := 1 - (1-tone.white)*hdrAmt
 
+	// The span (what reaches display white) is driven by a near-max percentile, so a
+	// small but real bright region compresses into the band instead of hard-clipping
+	// to white; only the top ~0.1% (genuine speculars) clip.
 	const srgbSlope1 = 1.055 / 2.4 // d/dv sRGBEncode at v=1 ≈ 0.4396
-	span := max(peak-1, 1e-6)      // guard the all-SDR tile (peak≈1)
+	spanPeak := max(pct(0.999), whitePeak)
+	span := max(spanPeak-1, 1e-6)
 	curve := func(v float64) float32 {
 		if v <= 1 {
 			return float32(white * float64(color.SRGBEncode(float32(v))))
