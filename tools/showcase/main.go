@@ -40,21 +40,29 @@ import (
 	"github.com/invis/arw2uhdr/internal/ultrahdr"
 )
 
-const (
+// Layout dimensions, scaled from -scale in main. rowLabels drives both the drawn
+// labels and the gutter width, so the gutter always fits the longest label.
+var (
 	boxW, boxH = 360, 260
 	gap        = 6
-	gutter     = 190 // left margin for row labels
+	gutter     = 190 // left margin for row labels; recomputed from the labels
+	textScale  = 3   // row-label glyph scale
+	rowLabels  = []string{"SDR", "GAIN MAP", "ULTRA HDR", "SDR PREVIEW"}
 )
+
+const labelPad = 10 // margin left of the label and between label and first tile
 
 func main() {
 	peakPct := flag.Float64("peak", 0.995, "row-4 highlight-peak percentile (hot-pixel-robust)")
 	white := flag.Float64("white", 0.75, "row-4 SDR white point: display level SDR-white squishes to, reserving [white,1] for HDR")
 	agg := flag.Float64("agg", 8, "row-4 HDR-shoulder aggressiveness (higher = steeper log rolloff)")
+	scale := flag.Float64("scale", 1, "output resolution multiplier (2 = double-size tiles, crisper)")
 	flag.Parse()
 	if flag.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: showcase [-peak p] [-white w] [-agg a] <dir> <out.jpg>")
+		fmt.Fprintln(os.Stderr, "usage: showcase [-scale s] [-peak p] [-white w] [-agg a] <dir> <out.jpg>")
 		os.Exit(2)
 	}
+	applyScale(*scale)
 	tone := toneParams{peakPct: *peakPct, white: *white, agg: *agg}
 	dir, out := flag.Arg(0), flag.Arg(1)
 
@@ -137,8 +145,11 @@ func process(pr pair, tone toneParams) tiles {
 
 	jpg, err := imaging.LoadImage(pr.jpg)
 	must(err)
-	if jpg.W > 1400 {
-		jpg = jpg.Resize(1400, jpg.H*1400/jpg.W)
+	// Work at ~2x the tile width (min 1400) so downscaling into the box stays crisp;
+	// the half-size RAW decode (~2700px) keeps up through scale ~3.
+	workCap := max(1400, boxW*2)
+	if jpg.W > workCap {
+		jpg = jpg.Resize(workCap, jpg.H*workCap/jpg.W)
 	}
 	sdrLin := imaging.New(jpg.W, jpg.H)
 	for i := range sdrLin.Pix {
@@ -348,11 +359,29 @@ func drawText(im *imaging.Image, s string, x, y, scale int, r, g, b float32) {
 }
 
 func drawLabels(im *imaging.Image) {
-	labels := []string{"SDR", "GAIN MAP", "ULTRA HDR", "SDR PREVIEW"}
-	for r, s := range labels {
-		y := gap + r*(boxH+gap) + boxH/2 - 11
-		drawText(im, s, 10, y, 3, 0.95, 0.95, 0.95)
+	pad := textScale * labelPad / 3
+	for r, s := range rowLabels {
+		y := gap + r*(boxH+gap) + boxH/2 - 7*textScale/2
+		drawText(im, s, pad, y, textScale, 0.95, 0.95, 0.95)
 	}
+}
+
+// applyScale sizes the layout from the resolution multiplier and widens the gutter
+// so it always fits the longest row label (no text bleeding into the tiles).
+func applyScale(s float64) {
+	if s < 1 {
+		s = 1
+	}
+	boxW = int(360 * s)
+	boxH = int(260 * s)
+	gap = int(6 * s)
+	textScale = max(3, int(3*s+0.5))
+	pad := textScale * labelPad / 3
+	longest := 0
+	for _, l := range rowLabels {
+		longest = max(longest, len(l))
+	}
+	gutter = pad + longest*6*textScale + pad
 }
 
 func encodeJPEG(im *imaging.Image, q int) []byte {
