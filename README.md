@@ -75,7 +75,8 @@ Key `convert`/`batch` flags:
 | `--threshold` | 0.5 | JPEG-luma gate below which nothing is boosted (masks shadows) |
 | `--ramp-width` | 0.35 | luma span over which the gate opens fully |
 | `--max-boost` | 3.0 | total-boost ceiling in stops (soft shoulder) |
-| `--gainmap` | single | `single` (luminance) or `rgb` (per-channel colour) |
+| `--chroma` | 0.3 | raw-mode RGB gain saturation, 0..1 (0 = neutral/≡single-channel, 1 = full per-channel colour recovery) |
+| `--gainmap` | single | `single` (luminance) or `rgb` (per-channel colour; needed for `--chroma` > 0 to matter) |
 | `--gainmap-scale` | 1 | gain-map downsample factor (1 = full res; raise to 2/4 for smaller files) |
 | `--lens` | distortion+ca | `distortion+ca`, `distortion`, or `off` |
 | `--vignetting` | off | experimental radial brightness correction (unvalidated scale) |

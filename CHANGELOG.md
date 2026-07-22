@@ -20,7 +20,14 @@ plus a new default rendering and two correctness fixes to the highlight path.
   detail in the map; raise it for smaller files).
 - Gain map: per-channel colour is neutralized inside clipped highlights, so a
   blown white sky no longer picks up a colour cast in RGB gain maps while
-  coloured, unclipped highlights keep their saturation (`NeutralizeHighlights`).
+  coloured, unclipped highlights keep their saturation. Opt-in via `--neutralize`
+  (off by default; superseded for most cases by `--chroma`).
+- `--chroma` (0..1, default 0.3): dials the RGB gain-map saturation in raw mode.
+  Each channel's gain is `lerp(luminanceGain, perChannelGain, chroma)` — 0 is a
+  neutral boost that keeps the JPEG's exact colour (and makes the RGB map ≡ the
+  single-channel one), 1 is full per-channel recovery (rebuilds clipped colour
+  but pulls mid-highlights toward the flatter RAW colour). ~0.3 adds real colour
+  without a jarring mid-highlight transition.
 
 ### Fixed
 - Portrait frames (EXIF 6/8) were misaligned: LibRaw auto-rotated the RAW to the

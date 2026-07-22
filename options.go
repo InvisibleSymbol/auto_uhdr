@@ -85,12 +85,15 @@ type Options struct {
 	Register   bool // residual registration of the RAW to the JPEG grid
 
 	// HDR rendition
-	Mode           HDRMode
-	Strength       float64 // display boost in stops at the plateau (0 = pure recovery)
-	Threshold      float64 // SDR luma where the boost ramp begins (lower reaches more of the image)
-	RampWidth      float64 // luma span over which the boost reaches full strength
-	MaxBoost       float64 // ceiling on total boost, in stops (soft shoulder)
-	PreserveChroma bool    // raw mode: neutral luminance boost that keeps the JPEG's exact colour
+	Mode      HDRMode
+	Strength  float64 // display boost in stops at the plateau (0 = pure recovery)
+	Threshold float64 // SDR luma where the boost ramp begins (lower reaches more of the image)
+	RampWidth float64 // luma span over which the boost reaches full strength
+	MaxBoost  float64 // ceiling on total boost, in stops (soft shoulder)
+	// Chroma (raw mode) dials the RGB gain-map saturation in [0,1]: 0 = neutral boost that keeps
+	// the JPEG's exact colour (RGB map ≡ single-channel), 1 = full per-channel recovery. ~0.3 adds
+	// some real colour without a jarring mid-highlight transition.
+	Chroma float64
 
 	// Gain map + container
 	GainMap        GainMapMode
@@ -115,9 +118,11 @@ func DefaultOptions() Options {
 		Threshold:      0.5, // JPEG-luma gate; masks shadows (RAW gain is ~0 in midtones anyway)
 		RampWidth:      0.35,
 		MaxBoost:       3.0,
+		Chroma:         0.3, // gentle per-channel colour; 0 = neutral, 1 = full recovery
 		GainMap:        GainMapLuminance,
 		GainMapScale:   1, // full-res: raw-boost carries real recovered detail in the map
 		GainMapQuality: ultrahdr.DefaultOptions().GainMapQuality,
+		NoNeutralize:   true, // the Chroma dial governs colour now; neutralization is opt-in
 	}
 }
 
@@ -154,7 +159,7 @@ func (o Options) hdrOptions() hdrbuild.Options {
 	ho.Threshold = o.Threshold
 	ho.RampWidth = o.RampWidth
 	ho.MaxBoostStops = o.MaxBoost
-	ho.PreserveChroma = o.PreserveChroma
+	ho.ChromaStrength = o.Chroma
 	return ho
 }
 
