@@ -85,11 +85,12 @@ type Options struct {
 	Register   bool // residual registration of the RAW to the JPEG grid
 
 	// HDR rendition
-	Mode      HDRMode
-	Strength  float64 // display boost in stops at the plateau (0 = pure recovery)
-	Threshold float64 // SDR luma where the boost ramp begins (lower reaches more of the image)
-	RampWidth float64 // luma span over which the boost reaches full strength
-	MaxBoost  float64 // ceiling on total boost, in stops (soft shoulder)
+	Mode           HDRMode
+	Strength       float64 // display boost in stops at the plateau (0 = pure recovery)
+	Threshold      float64 // SDR luma where the boost ramp begins (lower reaches more of the image)
+	RampWidth      float64 // luma span over which the boost reaches full strength
+	MaxBoost       float64 // ceiling on total boost, in stops (soft shoulder)
+	PreserveChroma bool    // raw mode: neutral luminance boost that keeps the JPEG's exact colour
 
 	// Gain map + container
 	GainMap        GainMapMode
@@ -153,6 +154,7 @@ func (o Options) hdrOptions() hdrbuild.Options {
 	ho.Threshold = o.Threshold
 	ho.RampWidth = o.RampWidth
 	ho.MaxBoostStops = o.MaxBoost
+	ho.PreserveChroma = o.PreserveChroma
 	return ho
 }
 
