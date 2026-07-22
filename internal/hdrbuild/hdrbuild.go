@@ -29,6 +29,7 @@ type Mode int
 const (
 	ModeHighlight Mode = iota // JPEG-anchored highlight recovery + optional display boost (default)
 	ModeDevelop               // full RAW linear as HDR (creative)
+	ModeRawBoost              // JPEG-gated, RAW-luminance-driven boost (physical; recovers clipped detail for free)
 )
 
 // Options controls HDR construction.
@@ -109,6 +110,32 @@ func anchorGains(sdr, raw *imaging.Image) [3]float64 {
 	return k
 }
 
+// lumaAnchor returns kL such that raw luminance·kL matches SDR luminance in the midtones.
+func lumaAnchor(sdr, raw *imaging.Image) float64 {
+	const lo, hi = 0.05, 0.85
+	W, H := sdr.W, sdr.H
+	step := 1
+	if W*H > 400000 {
+		step = int(math.Sqrt(float64(W*H) / 400000.0))
+	}
+	var ratios []float64
+	for y := 0; y < H; y += step {
+		for x := 0; x < W; x += step {
+			i := (y*W + x) * 3
+			ls := 0.2126*float64(sdr.Pix[i]) + 0.7152*float64(sdr.Pix[i+1]) + 0.0722*float64(sdr.Pix[i+2])
+			lr := 0.2126*float64(raw.Pix[i]) + 0.7152*float64(raw.Pix[i+1]) + 0.0722*float64(raw.Pix[i+2])
+			if ls >= lo && ls <= hi && lr > 1e-4 {
+				ratios = append(ratios, ls/lr)
+			}
+		}
+	}
+	if len(ratios) == 0 {
+		return 1
+	}
+	slices.Sort(ratios)
+	return ratios[len(ratios)/2]
+}
+
 // softShoulder maps v through a smooth compressive shoulder that asymptotes to vmax (in the log2
 // domain), so values near the ceiling compress rather than hard-clip — highlight detail survives.
 func softShoulder(v, maxStops float64) float64 {
@@ -174,6 +201,38 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 			out.Pix[i] = float32(softShoulder(v, o.MaxBoostStops))
 		}
 		return out, k
+	}
+
+	if o.Mode == ModeRawBoost {
+		// Gate from the JPEG, magnitude from the RAW: boost = 2^(strength·gate·rawGain) with
+		// gate = smoothstep(threshold..) on JPEG luma and rawGain = log2(lumaR·kL / lumaS). The
+		// JPEG mask zeroes dark regions (no dark->bright glow); in clipped regions the JPEG is flat
+		// white, so sdr·2^rawGain reconstructs the raw luminance — real detail, sharp, for free.
+		kL := lumaAnchor(sdrLin, rawLin)
+		const eps = 1e-4
+		rw := o.RampWidth
+		if rw <= 0 {
+			rw = 0.35
+		}
+		rampHi := math.Min(o.Threshold+rw, 1.0)
+		strength := o.Strength
+		if strength <= 0 {
+			strength = 1.0
+		}
+		imaging.ParallelRows(H, func(py0, py1 int) {
+			for p := py0 * W; p < py1*W; p++ {
+				i := p * 3
+				lS := 0.2126*float64(sdrLin.Pix[i]) + 0.7152*float64(sdrLin.Pix[i+1]) + 0.0722*float64(sdrLin.Pix[i+2])
+				lR := (0.2126*float64(rawLin.Pix[i]) + 0.7152*float64(rawLin.Pix[i+1]) + 0.0722*float64(rawLin.Pix[i+2])) * kL
+				gate := xmath.Smoothstep(o.Threshold, rampHi, lS)
+				rg := xmath.Clamp(math.Log2((lR+eps)/(lS+eps)), 0, o.MaxBoostStops)
+				boost := math.Exp2(rg * gate * strength)
+				for c := range 3 {
+					out.Pix[i+c] = float32(softShoulder(float64(sdrLin.Pix[i+c])*boost, o.MaxBoostStops))
+				}
+			}
+		})
+		return out, [3]float64{kL, kL, kL}
 	}
 
 	// SDR luma drives the recovery gate and boost ramp.
