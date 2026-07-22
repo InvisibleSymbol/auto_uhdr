@@ -16,9 +16,10 @@ type convertFlags struct {
 	rampWidth float64
 	maxBoost  float64
 
-	gainmap   string
-	gmQuality int
-	gmScale   int
+	gainmap      string
+	gmQuality    int
+	gmScale      int
+	noNeutralize bool
 
 	demosaic   string
 	lens       string
@@ -38,6 +39,7 @@ func (c *convertFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.gainmap, "gainmap", "single", "single | rgb (per-channel colour gain map)")
 	fs.IntVar(&c.gmQuality, "gainmap-quality", d.GainMapQuality, "gain map JPEG quality 1-100")
 	fs.IntVar(&c.gmScale, "gainmap-scale", d.GainMapScale, "gain map downsample factor per dimension (1 = full res)")
+	fs.BoolVar(&c.noNeutralize, "no-neutralize", false, "keep per-channel colour in clipped highlights (RGB gain map)")
 	fs.StringVar(&c.demosaic, "demosaic", "ahd", "ahd | dcb | dht | vng | ppg | linear")
 	fs.StringVar(&c.lens, "lens", "distortion+ca", "distortion+ca | distortion | off")
 	fs.BoolVar(&c.vignetting, "vignetting", false, "apply experimental radial vignetting correction")
@@ -100,6 +102,7 @@ func (c *convertFlags) options() (arw2uhdr.Options, error) {
 
 	o.Vignetting = c.vignetting
 	o.Register = !c.noRegister
+	o.NoNeutralize = c.noNeutralize
 	if c.verbose {
 		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	}
