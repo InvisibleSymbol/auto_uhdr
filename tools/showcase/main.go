@@ -5,13 +5,14 @@
 //	row 2  the RGB gain map (what the tool adds), gamma-lifted for visibility
 //	row 3  the Ultra HDR result — this row carries a real gain map, so on an HDR
 //	       display it actually renders brighter; on SDR it matches row 1
-//	row 4  the HDR result exposed down (−EV), baked into SDR so viewers without an
-//	       HDR screen can still see the recovered highlight detail
+//	row 4  the HDR result tonemapped to SDR (shadows/midtones as-is, highlights
+//	       rolled off) so viewers without an HDR screen see the recovered highlight
+//	       detail at natural brightness
 //
 // The output is one Ultra HDR JPEG whose gain map is zero everywhere except the
 // row-3 tiles. Processing is at reduced resolution (half-size decode) for speed.
 //
-// usage: showcase [-ev f] <dir> <out.jpg>
+// usage: showcase [-knee f] <dir> <out.jpg>
 package main
 
 import (
@@ -43,10 +44,10 @@ const (
 )
 
 func main() {
-	ev := flag.Float64("ev", 2.0, "stops to expose down for row 4")
+	knee := flag.Float64("knee", 0.7, "row-4 tonemap knee: values below stay as SDR, above roll off to 1")
 	flag.Parse()
 	if flag.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: showcase [-ev f] <dir> <out.jpg>")
+		fmt.Fprintln(os.Stderr, "usage: showcase [-knee f] <dir> <out.jpg>")
 		os.Exit(2)
 	}
 	dir, out := flag.Arg(0), flag.Arg(1)
@@ -69,7 +70,7 @@ func main() {
 	all := make([]tiles, n)
 	for col, pr := range pairs {
 		fmt.Printf("[%d/%d] %s\n", col+1, n, filepath.Base(pr.arw))
-		t := process(pr, *ev)
+		t := process(pr, *knee)
 		all[col] = t
 		x := colX(col)
 		// SDR base: row1 SDR, row2 gain map, row3 SDR (same base), row4 exposed.
@@ -115,7 +116,7 @@ type tiles struct {
 	sdrDisp, gainViz, exposed, hdrLin *imaging.Image
 }
 
-func process(pr pair, ev float64) tiles {
+func process(pr pair, knee float64) tiles {
 	ro := raw.DefaultOpts()
 	ro.Linear = true
 	ro.Highlight = 2
@@ -156,7 +157,7 @@ func process(pr pair, ev float64) tiles {
 	return tiles{
 		sdrDisp: srgb(sdrLinTile), // display base (rows 1 & 3)
 		gainViz: fit(orient(gammaLift(gmViz.ToImage()), o)),
-		exposed: fit(orient(exposeSRGB(hdr, ev), o)),
+		exposed: fit(orient(tonemapHighlights(hdr, knee), o)),
 		hdrLin:  fit(orient(hdr, o)), // linear HDR (row 3 lift)
 	}
 }
@@ -190,11 +191,21 @@ func srgb(lin *imaging.Image) *imaging.Image {
 	return out
 }
 
-func exposeSRGB(hdr *imaging.Image, ev float64) *imaging.Image {
+// tonemapHighlights keeps shadows/midtones exactly as the SDR (identity below the
+// knee) and rolls the extended-range highlights off into the remaining headroom, so
+// the recovered highlight detail shows at ~SDR-highlight brightness rather than the
+// whole frame being darkened. Applied per channel, then sRGB-encoded for display.
+func tonemapHighlights(hdr *imaging.Image, knee float64) *imaging.Image {
 	out := imaging.New(hdr.W, hdr.H)
-	scale := float32(math.Exp2(-ev))
+	head := 1 - knee
+	f := func(v float64) float64 {
+		if v <= knee || head <= 0 {
+			return v
+		}
+		return knee + head*(1-math.Exp(-(v-knee)/head))
+	}
 	for i := range hdr.Pix {
-		out.Pix[i] = color.SRGBEncode(hdr.Pix[i] * scale)
+		out.Pix[i] = color.SRGBEncode(float32(f(float64(hdr.Pix[i]))))
 	}
 	return out
 }
@@ -299,7 +310,7 @@ func drawText(im *imaging.Image, s string, x, y, scale int, r, g, b float32) {
 }
 
 func drawLabels(im *imaging.Image) {
-	labels := []string{"SDR", "GAIN MAP", "ULTRA HDR", "EXPOSED"}
+	labels := []string{"SDR", "GAIN MAP", "ULTRA HDR", "TONEMAPPED"}
 	for r, s := range labels {
 		y := gap + r*(boxH+gap) + boxH/2 - 11
 		drawText(im, s, 10, y, 3, 0.95, 0.95, 0.95)
