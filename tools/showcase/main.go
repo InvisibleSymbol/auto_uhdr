@@ -5,11 +5,12 @@
 //	row 2  the RGB gain map (what the tool adds), gamma-lifted for visibility
 //	row 3  the Ultra HDR result — this row carries a real gain map, so on an HDR
 //	       display it actually renders brighter; on SDR it matches row 1
-//	row 4  an SDR "capture" of the HDR rendition — the whole linear HDR tile is
+//	row 4  an SDR preview of the HDR rendition — the whole linear HDR tile is
 //	       exposed down by a single factor so its highlights land at SDR white and
 //	       every darker pixel scales proportionally (a half-as-bright HDR pixel
-//	       stays half as bright). The range squishes linearly into SDR, so the row
-//	       is darker than row 1 but shows the recovered highlight detail viewers
+//	       stays half as bright). A pure linear exposure, no tone curve, so regions
+//	       the gain map never lifts stay faithful to row 1 (just darker, never
+//	       higher-contrast); the row shows recovered highlight detail viewers
 //	       without an HDR screen would otherwise miss
 //
 // The output is one Ultra HDR JPEG whose gain map is zero everywhere except the
@@ -48,10 +49,9 @@ const (
 
 func main() {
 	peakPct := flag.Float64("peak", 0.995, "row-4 exposure percentile: HDR value mapped to SDR white (guards hot pixels)")
-	contrast := flag.Float64("contrast", 0.65, "row-4 tone-curve contrast, 0..1: camera-style S-curve restoring midtone punch")
 	flag.Parse()
 	if flag.NArg() < 2 {
-		fmt.Fprintln(os.Stderr, "usage: showcase [-peak p] [-contrast c] <dir> <out.jpg>")
+		fmt.Fprintln(os.Stderr, "usage: showcase [-peak p] <dir> <out.jpg>")
 		os.Exit(2)
 	}
 	dir, out := flag.Arg(0), flag.Arg(1)
@@ -74,7 +74,7 @@ func main() {
 	all := make([]tiles, n)
 	for col, pr := range pairs {
 		fmt.Printf("[%d/%d] %s\n", col+1, n, filepath.Base(pr.arw))
-		t := process(pr, *peakPct, *contrast)
+		t := process(pr, *peakPct)
 		all[col] = t
 		x := colX(col)
 		// SDR base: row1 SDR, row2 gain map, row3 SDR (same base), row4 exposed.
@@ -120,7 +120,7 @@ type tiles struct {
 	sdrDisp, gainViz, exposed, hdrLin *imaging.Image
 }
 
-func process(pr pair, peakPct, contrast float64) tiles {
+func process(pr pair, peakPct float64) tiles {
 	ro := raw.DefaultOpts()
 	ro.Linear = true
 	ro.Highlight = 2
@@ -161,7 +161,7 @@ func process(pr pair, peakPct, contrast float64) tiles {
 	return tiles{
 		sdrDisp: srgb(sdrLinTile), // display base (rows 1 & 3)
 		gainViz: fit(orient(gammaLift(gmViz.ToImage()), o)),
-		exposed: fit(orient(tonemapLinear(hdr, peakPct, contrast), o)),
+		exposed: fit(orient(tonemapLinear(hdr, peakPct), o)),
 		hdrLin:  fit(orient(hdr, o)), // linear HDR (row 3 lift)
 	}
 }
@@ -201,11 +201,10 @@ func srgb(lin *imaging.Image) *imaging.Image {
 // tile by it, so the highlights land at SDR white (1.0) and every darker pixel
 // scales by the same factor — a pixel half as bright in HDR stays half as bright
 // here. The HDR range squishes linearly into SDR, with recovered highlight detail
-// fitting inside [0,1]. That linear pull, re-encoded through the sRGB gamma, costs
-// midtone contrast (~s^(1/2.4)); a camera would counter that with its picture
-// profile, so we apply the same kind of S-curve (contrast) in the display domain to
-// restore midtone punch. Operates in linear light, sRGB-encodes, then tone-curves.
-func tonemapLinear(hdr *imaging.Image, peakPct, contrast float64) *imaging.Image {
+// fitting inside [0,1]. It is a pure linear exposure (no tone curve), so regions the
+// gain map never lifts stay faithful to the JPEG — just uniformly darker, never
+// higher-contrast. Operates in linear light, then sRGB-encodes for display.
+func tonemapLinear(hdr *imaging.Image, peakPct float64) *imaging.Image {
 	n := hdr.W * hdr.H
 	maxes := make([]float64, n)
 	for p := range n {
@@ -217,52 +216,14 @@ func tonemapLinear(hdr *imaging.Image, peakPct, contrast float64) *imaging.Image
 	peak := max(maxes[idx], 1) // never brighten: an all-SDR tile stays as shot
 	s := 1.0 / peak
 
-	// Exposure + sRGB encode, then find the tile's midtone (median display luma) so
-	// the contrast S-curve can pivot there — exposing for the peak parks the subject
-	// low, and a curve pivoted at its actual midtone steepens the content instead of
-	// the empty highlights.
-	disp := imaging.New(hdr.W, hdr.H)
-	lum := make([]float64, n)
-	for p := range n {
-		i := p * 3
-		r := color.SRGBEncode(float32(min(float64(hdr.Pix[i])*s, 1)))
-		g := color.SRGBEncode(float32(min(float64(hdr.Pix[i+1])*s, 1)))
-		b := color.SRGBEncode(float32(min(float64(hdr.Pix[i+2])*s, 1)))
-		disp.Pix[i], disp.Pix[i+1], disp.Pix[i+2] = r, g, b
-		lum[p] = 0.2126*float64(r) + 0.7152*float64(g) + 0.0722*float64(b)
-	}
-	sort.Float64s(lum)
-	pivot := min(max(lum[n/2], 0.15), 0.6) // keep the pivot in a sane midtone band
-
 	out := imaging.New(hdr.W, hdr.H)
 	for p := range n {
 		i := p * 3
-		out.Pix[i] = float32(contrastS(float64(disp.Pix[i]), pivot, contrast))
-		out.Pix[i+1] = float32(contrastS(float64(disp.Pix[i+1]), pivot, contrast))
-		out.Pix[i+2] = float32(contrastS(float64(disp.Pix[i+2]), pivot, contrast))
+		out.Pix[i] = color.SRGBEncode(float32(min(float64(hdr.Pix[i])*s, 1)))
+		out.Pix[i+1] = color.SRGBEncode(float32(min(float64(hdr.Pix[i+1])*s, 1)))
+		out.Pix[i+2] = color.SRGBEncode(float32(min(float64(hdr.Pix[i+2])*s, 1)))
 	}
 	return out
-}
-
-// contrastS is a camera-style contrast tone curve in the display (sRGB) domain, made
-// of two power segments meeting at the pivot. It is steepest exactly at the pivot
-// (slope = the exponent a) and eases toward the toe (black) and shoulder (white),
-// like a picture profile. Endpoints and the pivot are fixed (0→0, pivot→pivot, 1→1),
-// so the subject's midtone brightness is preserved while contrast around it rises.
-// amount in [0,1] sets the exponent (0 = linear/identity, 1 = a≈2.5, punchy).
-func contrastS(d, pivot, amount float64) float64 {
-	d = min(max(d, 0), 1)
-	a := 1 + amount*1.5
-	if d < pivot {
-		if pivot <= 0 {
-			return d
-		}
-		return pivot * math.Pow(d/pivot, a)
-	}
-	if pivot >= 1 {
-		return d
-	}
-	return pivot + (1-pivot)*(1-math.Pow((1-d)/(1-pivot), a))
 }
 
 func gammaLift(im *imaging.Image) *imaging.Image {
@@ -365,7 +326,7 @@ func drawText(im *imaging.Image, s string, x, y, scale int, r, g, b float32) {
 }
 
 func drawLabels(im *imaging.Image) {
-	labels := []string{"SDR", "GAIN MAP", "ULTRA HDR", "SDR CAPTURE"}
+	labels := []string{"SDR", "GAIN MAP", "ULTRA HDR", "SDR PREVIEW"}
 	for r, s := range labels {
 		y := gap + r*(boxH+gap) + boxH/2 - 11
 		drawText(im, s, 10, y, 3, 0.95, 0.95, 0.95)
