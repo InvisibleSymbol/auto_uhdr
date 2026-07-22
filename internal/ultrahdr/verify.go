@@ -2,7 +2,6 @@ package ultrahdr
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 )
@@ -21,23 +20,12 @@ func Verify(data []byte) error {
 	if !bytes.Contains(data, []byte(`Item:Semantic="GainMap"`)) {
 		return errors.New("missing GainMap container item")
 	}
-	// MPF index
-	mid := bytes.Index(data, []byte("MPF\x00"))
-	if mid < 0 {
-		return errors.New("missing MPF APP2 segment")
+	// MPF index → appended gain-map JPEG bounds
+	gmAbs, size1, err := locateGainMap(data)
+	if err != nil {
+		return err
 	}
-	endian := mid + 4
-	if endian+60 > len(data) {
-		return errors.New("truncated MPF")
-	}
-	// MP entries at endian+50 (writer layout); image 2 size/offset
-	size1 := binary.BigEndian.Uint32(data[endian+50+16+4:])
-	off1 := binary.BigEndian.Uint32(data[endian+50+16+8:])
-	gmAbs := endian + int(off1)
-	if gmAbs+2 > len(data) || data[gmAbs] != 0xFF || data[gmAbs+1] != 0xD8 {
-		return fmt.Errorf("MPF image-2 offset %d does not point at a JPEG SOI", gmAbs)
-	}
-	if gmAbs+int(size1) != len(data) {
+	if gmAbs+size1 != len(data) {
 		return fmt.Errorf("MPF image-2 size mismatch: %d+%d != %d", gmAbs, size1, len(data))
 	}
 	// gain map must carry hdrgm metadata

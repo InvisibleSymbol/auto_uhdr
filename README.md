@@ -47,6 +47,7 @@ arw2uhdr convert [flags] <input.arw> [input.jpg]   convert a pair (default comma
 arw2uhdr batch   [flags] <dir|file>...             convert every paired ARW under paths
 arw2uhdr verify  <file.jpg>                         check a file's Ultra HDR structure
 arw2uhdr inspect <file.arw>                         print the embedded Sony lens profile
+arw2uhdr extract-gainmap [-o out] [-lift] <file.jpg>  write out the embedded gain map
 arw2uhdr version
 ```
 
@@ -60,7 +61,12 @@ arw2uhdr convert --strength 1.5 photo.ARW     # push the RAW-driven lift harder
 arw2uhdr convert --gainmap-scale 4 photo.ARW  # coarser gain map, smaller file
 arw2uhdr convert --verify --json photo.ARW    # machine-readable result + structural self-check
 arw2uhdr batch -j 2 -o out/ ~/Photos          # parallel batch
+arw2uhdr extract-gainmap --lift photo_uhdr.jpg  # pull out the gain map, brightened to view
 ```
+
+`extract-gainmap` writes the embedded gain-map image to `<input>_gainmap.jpg` (or `-o`). The raw
+gain map is near-black (its values are log-encoded gains); pass `--lift` to gamma-brighten it into a
+viewable `.png`.
 
 Key `convert` / `batch` flags:
 

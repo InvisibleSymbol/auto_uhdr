@@ -7,6 +7,7 @@
 //	arw2uhdr batch   [flags] <dir|file>...
 //	arw2uhdr verify   <file.jpg>
 //	arw2uhdr inspect  <file.arw>
+//	arw2uhdr extract-gainmap [-o out] [-lift] <file.jpg>
 //	arw2uhdr version
 //
 // If the first argument is not a known command it is treated as convert, so
@@ -41,6 +42,8 @@ func main() {
 		err = cli.RunVerify(args[1:])
 	case "inspect":
 		err = cli.RunInspect(args[1:])
+	case "extract-gainmap":
+		err = cli.RunExtractGainMap(args[1:])
 	case "version", "--version", "-version":
 		fmt.Println("arw2uhdr", version)
 		return
@@ -77,6 +80,7 @@ usage:
   arw2uhdr batch   [flags] <dir|file>...             convert every paired ARW under paths
   arw2uhdr verify  <file.jpg>                         check a file's Ultra HDR structure
   arw2uhdr inspect <file.arw>                         print the embedded Sony lens profile
+  arw2uhdr extract-gainmap [-o out] [-lift] <file.jpg>  write out the embedded gain map
   arw2uhdr version                                    print version
 
 Run "arw2uhdr convert -h" or "arw2uhdr batch -h" for command flags.
