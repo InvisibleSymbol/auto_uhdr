@@ -94,6 +94,9 @@ type Options struct {
 	// the JPEG's exact colour (RGB map ≡ single-channel), 1 = full per-channel recovery. ~0.3 adds
 	// some real colour without a jarring mid-highlight transition.
 	Chroma float64
+	// ChromaTrack scales Chroma by JPEG brightness so per-channel colour recovery ramps in with
+	// clipping (neutral midtones, full Chroma in the blown highlights). Chroma becomes the peak.
+	ChromaTrack bool
 
 	// Gain map + container
 	GainMap        GainMapMode
@@ -160,6 +163,7 @@ func (o Options) hdrOptions() hdrbuild.Options {
 	ho.RampWidth = o.RampWidth
 	ho.MaxBoostStops = o.MaxBoost
 	ho.ChromaStrength = o.Chroma
+	ho.ChromaTrack = o.ChromaTrack
 	return ho
 }
 

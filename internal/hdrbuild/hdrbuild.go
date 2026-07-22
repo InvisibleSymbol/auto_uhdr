@@ -71,6 +71,11 @@ type Options struct {
 	// mid-highlights toward the flatter RAW colour). Small values (~0.3) add some real colour
 	// without a jarring transition.
 	ChromaStrength float64
+	// ChromaTrack (ModeRawBoost only) scales ChromaStrength by JPEG brightness, so per-channel
+	// colour recovery ramps in with clipping: neutral (colour-preserving) in the midtones where the
+	// JPEG's colour is good, rising to full ChromaStrength in the brightest/clipped highlights where
+	// the JPEG lost colour. With this on, ChromaStrength is the PEAK reached at clipping.
+	ChromaTrack bool
 
 	MaxBoostStops float64 // ceiling on total boost, in stops (default 3.0)
 }
@@ -213,11 +218,16 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 				lR := 0.2126*float64(rawLin.Pix[i])*k[0] + 0.7152*float64(rawLin.Pix[i+1])*k[1] + 0.0722*float64(rawLin.Pix[i+2])*k[2]
 				gate := xmath.Smoothstep(o.Threshold, rampHi, lS)
 				rgLum := xmath.Clamp(math.Log2((lR+eps)/(lS+eps)), 0, o.MaxBoostStops)
+				// optionally ramp chroma with JPEG brightness so recovery concentrates in clipping.
+				cEff := chroma
+				if o.ChromaTrack {
+					cEff *= xmath.Smoothstep(0.5, 1.0, lS)
+				}
 				for c := range 3 {
 					s := float64(sdrLin.Pix[i+c])
 					rv := float64(rawLin.Pix[i+c]) * k[c]
 					rgC := xmath.Clamp(math.Log2((rv+eps)/(s+eps)), 0, o.MaxBoostStops)
-					rg := xmath.Lerp(rgLum, rgC, chroma) // neutral..per-channel
+					rg := xmath.Lerp(rgLum, rgC, cEff) // neutral..per-channel
 					out.Pix[i+c] = float32(softShoulder(s*math.Exp2(rg*gate*strength), o.MaxBoostStops))
 				}
 			}

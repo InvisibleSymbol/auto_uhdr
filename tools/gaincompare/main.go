@@ -52,20 +52,21 @@ func main() {
 	gmOpt.ScaleFactor = 1
 	gmOpt.NeutralizeHighlights = false
 
-	mk := func(chroma float64) *imaging.Image {
+	mk := func(chroma float64, track bool) *imaging.Image {
 		o := base
 		o.ChromaStrength = chroma
+		o.ChromaTrack = track
 		hdr, _ := hdrbuild.Build(sdrLin, rawA, o)
 		gm, _, _ := gainmap.Compute(sdrLin, hdr, gmOpt)
 		return enc(orient(gm.ToImage(), cp.Orientation))
 	}
-	panel := hstack3(mk(0.0), mk(0.3), mk(1.0))
+	panel := hstack3(mk(0.3, false), mk(1.0, false), mk(1.0, true))
 	if panel.W > 1800 {
 		s := 1800.0 / float64(panel.W)
 		panel = panel.Resize(int(float64(panel.W)*s), int(float64(panel.H)*s))
 	}
 	must(panel.SavePNG8(out))
-	fmt.Println("wrote", out, "(RGB gain map at chroma  left: 0.0   middle: 0.3   right: 1.0)")
+	fmt.Println("wrote", out, "(RGB gain map  left: flat 0.3   middle: flat 1.0   right: tracked 1.0)")
 }
 
 func enc(im *imaging.Image) *imaging.Image {
