@@ -56,6 +56,44 @@ func pair(luma float32) (*imaging.Image, *imaging.Image) {
 	return sdr, raw
 }
 
+func TestRawBoostGatesShadowsLiftsHighlights(t *testing.T) {
+	const W, H = 8, 6
+	sdr := imaging.New(W, H)
+	raw := imaging.New(W, H)
+	set := func(im *imaging.Image, x, y int, v float32) {
+		i := (y*W + x) * 3
+		im.Pix[i], im.Pix[i+1], im.Pix[i+2] = v, v, v
+	}
+	for y := range H { // midtones: raw==sdr so the anchor k≈1
+		for x := range W {
+			set(sdr, x, y, 0.4)
+			set(raw, x, y, 0.4)
+		}
+	}
+	set(sdr, 0, 0, 0.95) // clipped highlight, RAW has headroom
+	set(raw, 0, 0, 2.0)
+	set(sdr, 1, 0, 0.20) // shadow with a bright/noisy RAW value
+	set(raw, 1, 0, 1.5)
+
+	o := DefaultOptions()
+	o.Mode = ModeRawBoost
+	o.Strength = 1
+	o.Threshold = 0.5
+	hdr, k := Build(sdr, raw, o)
+	if math.Abs(k[0]-1) > 0.05 {
+		t.Fatalf("anchor k=%v, want ~1", k)
+	}
+	if hdr.Pix[0] < 1.5 { // highlight lifted toward the RAW (~2.0)
+		t.Errorf("clipped highlight not lifted toward RAW: %v", hdr.Pix[0])
+	}
+	if s := hdr.Pix[(0*W+1)*3]; s > 0.25 { // shadow masked despite bright RAW
+		t.Errorf("shadow got boosted (noise would leak): %v", s)
+	}
+	if m := hdr.Pix[(3*W+3)*3]; math.Abs(float64(m)-0.4) > 0.02 { // midtone untouched
+		t.Errorf("midtone changed: %v", m)
+	}
+}
+
 func TestStrengthZeroIsTameInMidtones(t *testing.T) {
 	sdr, raw := pair(0.6) // an upper-midtone, below the recovery gate
 	o := DefaultOptions()

@@ -110,32 +110,6 @@ func anchorGains(sdr, raw *imaging.Image) [3]float64 {
 	return k
 }
 
-// lumaAnchor returns kL such that raw luminance·kL matches SDR luminance in the midtones.
-func lumaAnchor(sdr, raw *imaging.Image) float64 {
-	const lo, hi = 0.05, 0.85
-	W, H := sdr.W, sdr.H
-	step := 1
-	if W*H > 400000 {
-		step = int(math.Sqrt(float64(W*H) / 400000.0))
-	}
-	var ratios []float64
-	for y := 0; y < H; y += step {
-		for x := 0; x < W; x += step {
-			i := (y*W + x) * 3
-			ls := 0.2126*float64(sdr.Pix[i]) + 0.7152*float64(sdr.Pix[i+1]) + 0.0722*float64(sdr.Pix[i+2])
-			lr := 0.2126*float64(raw.Pix[i]) + 0.7152*float64(raw.Pix[i+1]) + 0.0722*float64(raw.Pix[i+2])
-			if ls >= lo && ls <= hi && lr > 1e-4 {
-				ratios = append(ratios, ls/lr)
-			}
-		}
-	}
-	if len(ratios) == 0 {
-		return 1
-	}
-	slices.Sort(ratios)
-	return ratios[len(ratios)/2]
-}
-
 // softShoulder maps v through a smooth compressive shoulder that asymptotes to vmax (in the log2
 // domain), so values near the ceiling compress rather than hard-clip — highlight detail survives.
 func softShoulder(v, maxStops float64) float64 {
@@ -204,11 +178,13 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 	}
 
 	if o.Mode == ModeRawBoost {
-		// Gate from the JPEG, magnitude from the RAW: boost = 2^(strength·gate·rawGain) with
-		// gate = smoothstep(threshold..) on JPEG luma and rawGain = log2(lumaR·kL / lumaS). The
-		// JPEG mask zeroes dark regions (no dark->bright glow); in clipped regions the JPEG is flat
-		// white, so sdr·2^rawGain reconstructs the raw luminance — real detail, sharp, for free.
-		kL := lumaAnchor(sdrLin, rawLin)
+		// Gate from the JPEG, magnitude from the RAW. gate = smoothstep(threshold..) on JPEG
+		// luma masks the shadows (no dark->bright glow, no raw shadow noise). Per channel,
+		// rawGain = log2(raw·k / sdr) and out = sdr·2^(strength·gate·rawGain): bright surfaces
+		// lift by how bright the RAW says they are, and in clipped regions the flat-white JPEG
+		// makes this reconstruct the raw value — real detail, sharp, for free. Per-channel keeps
+		// coloured (unclipped) highlights saturated; clipped-highlight colour is cleaned by the
+		// gain map's highlight neutralization.
 		const eps = 1e-4
 		rw := o.RampWidth
 		if rw <= 0 {
@@ -223,16 +199,16 @@ func Build(sdrLin, rawLin *imaging.Image, o Options) (*imaging.Image, [3]float64
 			for p := py0 * W; p < py1*W; p++ {
 				i := p * 3
 				lS := 0.2126*float64(sdrLin.Pix[i]) + 0.7152*float64(sdrLin.Pix[i+1]) + 0.0722*float64(sdrLin.Pix[i+2])
-				lR := (0.2126*float64(rawLin.Pix[i]) + 0.7152*float64(rawLin.Pix[i+1]) + 0.0722*float64(rawLin.Pix[i+2])) * kL
 				gate := xmath.Smoothstep(o.Threshold, rampHi, lS)
-				rg := xmath.Clamp(math.Log2((lR+eps)/(lS+eps)), 0, o.MaxBoostStops)
-				boost := math.Exp2(rg * gate * strength)
 				for c := range 3 {
-					out.Pix[i+c] = float32(softShoulder(float64(sdrLin.Pix[i+c])*boost, o.MaxBoostStops))
+					s := float64(sdrLin.Pix[i+c])
+					rv := float64(rawLin.Pix[i+c]) * k[c]
+					rg := xmath.Clamp(math.Log2((rv+eps)/(s+eps)), 0, o.MaxBoostStops)
+					out.Pix[i+c] = float32(softShoulder(s*math.Exp2(rg*gate*strength), o.MaxBoostStops))
 				}
 			}
 		})
-		return out, [3]float64{kL, kL, kL}
+		return out, k
 	}
 
 	// SDR luma drives the recovery gate and boost ramp.

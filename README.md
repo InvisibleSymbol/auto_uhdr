@@ -12,18 +12,22 @@ Sony lens-metadata parsing) extends to other Sony bodies.
 
 The conversion is a pipeline of four stages:
 
-1. **RAW decode** — LibRaw (cgo), scene-linear 16-bit, camera white balance, highlight blending.
+1. **RAW decode** — LibRaw (cgo), scene-linear 16-bit, camera white balance, highlight blending,
+   decoded sensor-native (`user_flip=0`) so it stays in the same orientation as the stored JPEG.
 2. **Lens correction** — parses Sony's embedded distortion/CA correction (`DistortionCorrParams`
    etc.) from the ARW's plaintext SubIFD in pure Go (no exiftool, no maker-note decryption) and
    replicates the camera's radial warp so the RAW aligns pixel-for-pixel with the JPEG, plus a
    residual registration (block matching + robust fit) that removes the small scale/framing
    mismatch between LibRaw's decode grid and the JPEG (corner error ~15 px → <1 px).
-3. **HDR rendition** — the JPEG is the reference everywhere it has valid data; RAW content is
-   spliced in only where the JPEG is clipped (luma 0.90→0.97). A **monotonic** display boost
-   (threshold → threshold+ramp-width, plateauing at full strength) adds pop; a soft log-domain
-   shoulder compresses near the ceiling instead of clipping.
+3. **HDR rendition** — the default `raw` mode gates on the JPEG (its luma masks the shadows) and
+   takes the boost *magnitude* from the RAW: per channel, `gain = log2(raw·k / jpeg)`, so bright
+   surfaces lift by their true scene luminance and clipped regions reconstruct genuine RAW detail
+   (sharp, for free), while shadows get no boost (no dark→bright glow, no RAW noise). A soft
+   log-domain shoulder compresses near the ceiling. (`highlight` and `develop` modes remain.)
 4. **Gain map + container** — single- or per-channel (RGB) gain map, encoded per the Adobe/Google
-   `hdrgm` math, assembled into a JPEG_R container (MPF index + GContainer XMP) in pure Go.
+   `hdrgm` math, with per-channel colour neutralized inside clipped highlights (a blown white sky
+   stays neutral; coloured unclipped highlights keep their saturation). Assembled into a JPEG_R
+   container (MPF index + GContainer XMP) in pure Go.
 
 Each stage is a Go interface with a default implementation, so any of them can be swapped — see
 [Extending](#extending-the-pipeline).
@@ -53,10 +57,11 @@ arw2uhdr version
 inferred from the ARW basename.
 
 ```
-arw2uhdr convert photo.ARW                    # pairs with photo.JPG automatically
+arw2uhdr convert photo.ARW                    # pairs with photo.JPG automatically (raw mode)
 arw2uhdr convert --gainmap rgb photo.ARW      # per-channel gain map (coloured lights stay saturated)
-arw2uhdr convert --strength 2 --threshold 0.2 photo.ARW   # more pop, reaching deeper into midtones
-arw2uhdr convert --strength 0 photo.ARW       # pure highlight recovery, no display boost
+arw2uhdr convert --strength 1.5 photo.ARW     # push the RAW-driven lift harder
+arw2uhdr convert --hdr-mode highlight --strength 2 photo.ARW   # older synthetic-boost look
+arw2uhdr convert --gainmap-scale 1 photo.ARW  # full-res gain map (max recovered detail, bigger file)
 arw2uhdr convert --verify --json photo.ARW    # machine-readable result + structural self-check
 arw2uhdr batch -j 2 -o out/ ~/Photos          # native parallel batch
 ```
@@ -65,12 +70,13 @@ Key `convert`/`batch` flags:
 
 | flag | default | meaning |
 |---|---|---|
-| `--strength` | 1.5 | display boost in stops at the plateau (0 = recovery only) |
-| `--threshold` | 0.3 | SDR luma where the boost ramp begins (lower = more of the image) |
-| `--ramp-width` | 0.35 | luma span over which boost reaches full strength |
+| `--hdr-mode` | raw | `raw` (RAW-luminance-driven, JPEG-gated), `highlight` (synthetic boost), or `develop` |
+| `--strength` | 1.0 | multiplier on the RAW gain (raw mode); stops of synthetic boost (highlight mode) |
+| `--threshold` | 0.5 | JPEG-luma gate below which nothing is boosted (masks shadows) |
+| `--ramp-width` | 0.35 | luma span over which the gate opens fully |
 | `--max-boost` | 3.0 | total-boost ceiling in stops (soft shoulder) |
 | `--gainmap` | single | `single` (luminance) or `rgb` (per-channel colour) |
-| `--gainmap-scale` | 4 | gain-map downsample factor (1 = full resolution) |
+| `--gainmap-scale` | 2 | gain-map downsample factor (1 = full res; raw mode carries real detail here) |
 | `--lens` | distortion+ca | `distortion+ca`, `distortion`, or `off` |
 | `--vignetting` | off | experimental radial brightness correction (unvalidated scale) |
 | `--no-register` | — | skip residual registration (debug) |

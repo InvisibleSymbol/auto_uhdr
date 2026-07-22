@@ -5,9 +5,27 @@ based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased] — refactor branch
 
-A ground-up refactor for maintainability and idiomatic, modern (Go 1.24) style.
-No change to the validated HDR look: the tuned rendition math is preserved and
-now locked by a golden numeric test.
+A ground-up refactor for maintainability and idiomatic, modern (Go 1.24) style,
+plus a new default rendering and two correctness fixes to the highlight path.
+
+### Rendering
+- New default `--hdr-mode raw`: a JPEG-gated, RAW-luminance-driven boost. The
+  boost magnitude comes from how much brighter the RAW is than the JPEG (per
+  channel), so bright surfaces lift by their real scene luminance and clipped
+  regions reconstruct genuine RAW detail, while the JPEG luma gate masks shadows
+  (no dark→bright glow, no RAW shadow noise). More faithful than the previous
+  synthetic display boost, which remains as `--hdr-mode highlight` (still
+  golden-tested). Defaults retuned accordingly (`--strength 1.0`, `--threshold
+  0.5`, `--gainmap-scale 2`).
+- Gain map: per-channel colour is neutralized inside clipped highlights, so a
+  blown white sky no longer picks up a colour cast in RGB gain maps while
+  coloured, unclipped highlights keep their saturation (`NeutralizeHighlights`).
+
+### Fixed
+- Portrait frames (EXIF 6/8) were misaligned: LibRaw auto-rotated the RAW to the
+  shot's orientation while the JPEG stays sensor-native, so highlight recovery
+  pasted rotated RAW content into the wrong place (e.g. a staircase in the sky).
+  The RAW now decodes sensor-native (`user_flip=0`).
 
 ### Added
 - Public library API at the module root: `arw2uhdr.Convert(ctx, in, opts)` with

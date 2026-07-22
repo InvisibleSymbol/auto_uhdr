@@ -30,7 +30,7 @@ type convertFlags struct {
 
 func (c *convertFlags) register(fs *flag.FlagSet) {
 	d := arw2uhdr.DefaultOptions()
-	fs.StringVar(&c.hdrMode, "hdr-mode", "highlight", "highlight | develop")
+	fs.StringVar(&c.hdrMode, "hdr-mode", "raw", "raw | highlight | develop")
 	fs.Float64Var(&c.strength, "strength", d.Strength, "display boost in stops at the plateau (0 = pure recovery)")
 	fs.Float64Var(&c.threshold, "threshold", d.Threshold, "SDR luma where the boost ramp begins (lower = more of the image)")
 	fs.Float64Var(&c.rampWidth, "ramp-width", d.RampWidth, "luma span over which the boost reaches full strength")
@@ -49,12 +49,14 @@ func (c *convertFlags) options() (arw2uhdr.Options, error) {
 	o := arw2uhdr.DefaultOptions()
 
 	switch c.hdrMode {
+	case "raw":
+		o.Mode = arw2uhdr.HDRRaw
 	case "highlight":
 		o.Mode = arw2uhdr.HDRHighlight
 	case "develop":
 		o.Mode = arw2uhdr.HDRDevelop
 	default:
-		return o, usageErr("unknown --hdr-mode %q (highlight|develop)", c.hdrMode)
+		return o, usageErr("unknown --hdr-mode %q (raw|highlight|develop)", c.hdrMode)
 	}
 	o.Strength, o.Threshold, o.RampWidth, o.MaxBoost = c.strength, c.threshold, c.rampWidth, c.maxBoost
 
