@@ -115,7 +115,8 @@ func DefaultOptions() Options {
 	}
 }
 
-// the resolved internal option structs the default stages consume.
+// The methods below resolve the public Options into the internal per-stage
+// option structs the default stage implementations consume.
 
 func (o Options) rawOpts() raw.Opts {
 	ro := raw.DefaultOpts()
