@@ -38,7 +38,7 @@ func (c *convertFlags) register(fs *flag.FlagSet) {
 	fs.Float64Var(&c.threshold, "threshold", d.Threshold, "SDR luma where the boost ramp begins (lower = more of the image)")
 	fs.Float64Var(&c.rampWidth, "ramp-width", d.RampWidth, "luma span over which the boost reaches full strength")
 	fs.Float64Var(&c.maxBoost, "max-boost", d.MaxBoost, "ceiling on total boost, stops (soft shoulder)")
-	fs.StringVar(&c.gainmap, "gainmap", "single", "single | rgb (per-channel colour gain map)")
+	fs.StringVar(&c.gainmap, "gainmap", "rgb", "single | rgb (per-channel colour gain map)")
 	fs.IntVar(&c.gmQuality, "gainmap-quality", d.GainMapQuality, "gain map JPEG quality 1-100")
 	fs.IntVar(&c.gmScale, "gainmap-scale", d.GainMapScale, "gain map downsample factor per dimension (1 = full res)")
 	fs.BoolVar(&c.neutralize, "neutralize", false, "neutralize per-channel colour in clipped highlights (RGB gain map)")

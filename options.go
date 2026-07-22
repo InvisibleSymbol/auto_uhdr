@@ -121,9 +121,9 @@ func DefaultOptions() Options {
 		Threshold:      0.5, // JPEG-luma gate; masks shadows (RAW gain is ~0 in midtones anyway)
 		RampWidth:      0.35,
 		MaxBoost:       3.0,
-		Chroma:         0.3, // gentle per-channel colour; 0 = neutral, 1 = full recovery
-		GainMap:        GainMapLuminance,
-		GainMapScale:   1, // full-res: raw-boost carries real recovered detail in the map
+		Chroma:         0.3,        // gentle per-channel colour; 0 = neutral, 1 = full recovery
+		GainMap:        GainMapRGB, // so the Chroma dial takes effect by default
+		GainMapScale:   1,          // full-res: raw-boost carries real recovered detail in the map
 		GainMapQuality: ultrahdr.DefaultOptions().GainMapQuality,
 		NoNeutralize:   true, // the Chroma dial governs colour now; neutralization is opt-in
 	}

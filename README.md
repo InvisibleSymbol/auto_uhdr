@@ -77,7 +77,7 @@ Key `convert`/`batch` flags:
 | `--max-boost` | 3.0 | total-boost ceiling in stops (soft shoulder) |
 | `--chroma` | 0.3 | raw-mode RGB gain saturation, 0..1 (0 = neutral/≡single-channel, 1 = full per-channel colour recovery) |
 | `--chroma-track` | off | ramp `--chroma` with JPEG brightness: neutral midtones (no graying), peak colour in clipped highlights |
-| `--gainmap` | single | `single` (luminance) or `rgb` (per-channel colour; needed for `--chroma` > 0 to matter) |
+| `--gainmap` | rgb | `rgb` (per-channel colour; needed for `--chroma` to matter) or `single` (luminance) |
 | `--gainmap-scale` | 1 | gain-map downsample factor (1 = full res; raise to 2/4 for smaller files) |
 | `--lens` | distortion+ca | `distortion+ca`, `distortion`, or `off` |
 | `--vignetting` | off | experimental radial brightness correction (unvalidated scale) |
