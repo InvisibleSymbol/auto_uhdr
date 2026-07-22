@@ -32,7 +32,7 @@ func (a Affine) Apply(mov *imaging.Image, W, H int) *imaging.Image {
 	imaging.ParallelRows(H, func(y0, y1 int) {
 		for y := y0; y < y1; y++ {
 			sy := a.Sy*float64(y) + oyf
-			for x := 0; x < W; x++ {
+			for x := range W {
 				sx := a.Sx*float64(x) + oxf
 				r, g, b := mov.SampleBilinear(sx, sy)
 				out.Set(x, y, r, g, b)
@@ -73,7 +73,7 @@ func def(o Options) Options {
 func gradMag(im *imaging.Image) []float64 {
 	W, H := im.W, im.H
 	lu := make([]float64, W*H)
-	for i := 0; i < W*H; i++ {
+	for i := range W * H {
 		lu[i] = 0.2126*float64(im.Pix[i*3]) + 0.7152*float64(im.Pix[i*3+1]) + 0.0722*float64(im.Pix[i*3+2])
 	}
 	g := make([]float64, W*H)

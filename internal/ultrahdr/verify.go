@@ -3,6 +3,7 @@ package ultrahdr
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -11,23 +12,23 @@ import (
 // hdrgm metadata. Returns nil if the file looks like a well-formed Ultra HDR.
 func Verify(data []byte) error {
 	if len(data) < 4 || data[0] != 0xFF || data[1] != 0xD8 {
-		return fmt.Errorf("not a JPEG")
+		return errors.New("not a JPEG")
 	}
 	// GContainer XMP with GainMap item on the primary
 	if !bytes.Contains(data, []byte("http://ns.google.com/photos/1.0/container/")) {
-		return fmt.Errorf("missing GContainer XMP")
+		return errors.New("missing GContainer XMP")
 	}
 	if !bytes.Contains(data, []byte(`Item:Semantic="GainMap"`)) {
-		return fmt.Errorf("missing GainMap container item")
+		return errors.New("missing GainMap container item")
 	}
 	// MPF index
 	mid := bytes.Index(data, []byte("MPF\x00"))
 	if mid < 0 {
-		return fmt.Errorf("missing MPF APP2 segment")
+		return errors.New("missing MPF APP2 segment")
 	}
 	endian := mid + 4
 	if endian+60 > len(data) {
-		return fmt.Errorf("truncated MPF")
+		return errors.New("truncated MPF")
 	}
 	// MP entries at endian+50 (writer layout); image 2 size/offset
 	size1 := binary.BigEndian.Uint32(data[endian+50+16+4:])

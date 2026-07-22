@@ -9,6 +9,7 @@ package raw
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -67,7 +68,7 @@ type Meta struct {
 func Decode(path string, o Opts) (*imaging.Image, *Meta, error) {
 	lr := C.libraw_init(0)
 	if lr == nil {
-		return nil, nil, fmt.Errorf("libraw_init failed")
+		return nil, nil, errors.New("libraw_init failed")
 	}
 	defer C.libraw_close(lr)
 

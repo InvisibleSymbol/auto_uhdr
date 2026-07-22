@@ -137,7 +137,7 @@ func guidedFilter(I, p []float64, w, h, r int, eps float64) []float64 {
 	n := len(p)
 	Ip := make([]float64, n)
 	II := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		Ip[i] = I[i] * p[i]
 		II[i] = I[i] * I[i]
 	}
@@ -147,7 +147,7 @@ func guidedFilter(I, p []float64, w, h, r int, eps float64) []float64 {
 	cII := box(II)
 	a := make([]float64, n)
 	b := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		va := (cIp[i] - mI[i]*mp[i]) / (cII[i] - mI[i]*mI[i] + eps)
 		a[i] = va
 		b[i] = mp[i] - va*mI[i]
@@ -155,7 +155,7 @@ func guidedFilter(I, p []float64, w, h, r int, eps float64) []float64 {
 	ma := box(a)
 	mb := box(b)
 	out := make([]float64, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out[i] = ma[i]*I[i] + mb[i]
 	}
 	return out

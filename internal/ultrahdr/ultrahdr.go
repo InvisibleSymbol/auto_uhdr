@@ -8,6 +8,7 @@ package ultrahdr
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/jpeg"
@@ -29,7 +30,7 @@ func Encode(baseJPEG []byte, gm *gainmap.GainMap, meta gainmap.Metadata, o Optio
 		o.GainMapQuality = 90
 	}
 	if len(baseJPEG) < 2 || baseJPEG[0] != 0xFF || baseJPEG[1] != 0xD8 {
-		return nil, fmt.Errorf("base is not a JPEG")
+		return nil, errors.New("ultrahdr: base is not a JPEG")
 	}
 
 	// 1) encode the gain map as a JPEG and splice in its hdrgm XMP.
@@ -97,7 +98,7 @@ func encodeGainMapJPEG(gm *gainmap.GainMap, quality int) ([]byte, error) {
 // segments. It also returns the absolute start offset of each inserted segment.
 func insertSegments(base []byte, segs [][]byte) ([]byte, []int, error) {
 	if len(base) < 2 || base[0] != 0xFF || base[1] != 0xD8 {
-		return nil, nil, fmt.Errorf("not a JPEG")
+		return nil, nil, errors.New("not a JPEG")
 	}
 	out := make([]byte, 0, len(base)+segLen(segs))
 	out = append(out, 0xFF, 0xD8)

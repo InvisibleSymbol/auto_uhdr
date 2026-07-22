@@ -17,6 +17,7 @@ package sonylens
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -138,7 +139,7 @@ func (t *tiff) readIFD(off int) (map[uint16]entry, int, error) {
 	}
 	m := make(map[uint16]entry, nEntries)
 	p := off + 2
-	for i := 0; i < int(nEntries); i++ {
+	for i := range int(nEntries) {
 		if p+12 > len(t.b) {
 			return nil, 0, fmt.Errorf("IFD entry %d out of range", i)
 		}
@@ -163,7 +164,7 @@ func ReadARW(path string) (*CorrParams, error) {
 
 func parseARW(b []byte) (*CorrParams, error) {
 	if len(b) < 8 {
-		return nil, fmt.Errorf("file too small")
+		return nil, errors.New("sonylens: file too small")
 	}
 	t := &tiff{b: b}
 	switch {
@@ -172,10 +173,10 @@ func parseARW(b []byte) (*CorrParams, error) {
 	case b[0] == 'M' && b[1] == 'M':
 		t.bo = binary.BigEndian
 	default:
-		return nil, fmt.Errorf("not a TIFF/ARW (bad byte order marker)")
+		return nil, errors.New("sonylens: not a TIFF/ARW (bad byte order marker)")
 	}
 	if magic, _ := t.u16(2); magic != 42 {
-		return nil, fmt.Errorf("not a TIFF/ARW (bad magic %d)", magic)
+		return nil, fmt.Errorf("sonylens: not a TIFF/ARW (bad magic %d)", magic)
 	}
 	ifd0Off, err := t.u32(4)
 	if err != nil {
@@ -206,7 +207,7 @@ func parseARW(b []byte) (*CorrParams, error) {
 		}
 	}
 	if len(subOffs) == 0 {
-		return nil, fmt.Errorf("no SubIFDs (0x014a) in IFD0")
+		return nil, errors.New("sonylens: no SubIFDs (0x014a) in IFD0")
 	}
 
 	// Scan each sub-IFD for the correction tags; take the first that carries them.
