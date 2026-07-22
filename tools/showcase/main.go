@@ -57,6 +57,7 @@ func main() {
 	peakPct := flag.Float64("peak", 0.995, "row-4 highlight-peak percentile (hot-pixel-robust)")
 	white := flag.Float64("white", 0.75, "row-4 SDR white point: display level SDR-white squishes to, reserving [white,1] for HDR")
 	agg := flag.Float64("agg", 4, "row-4 HDR-shoulder S steepness (higher = quicker mid-transition; smooth join + smooth max-out)")
+	quality := flag.Int("q", 92, "base JPEG quality (lower shrinks the file)")
 	scale := flag.Float64("scale", 1, "output resolution multiplier (2 = double-size tiles, crisper)")
 	flag.Parse()
 	if flag.NArg() < 2 {
@@ -107,7 +108,7 @@ func main() {
 	}
 
 	// Encode the SDR grid as the base JPEG, compute the gain map from the grids.
-	base := encodeJPEG(sdr, 92)
+	base := encodeJPEG(sdr, *quality)
 	sdrGridLin := imaging.New(gridW, gridH)
 	for i := range sdrGridLin.Pix {
 		sdrGridLin.Pix[i] = color.SRGBDecode(sdr.Pix[i])
