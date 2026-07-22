@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # batch.sh — convert every ARW with a paired JPEG under the given directories to Ultra HDR.
 #
+# The binary has a native equivalent: `arw2uhdr batch -j N -o OUTDIR SRC...`. This
+# POSIX-shell version is kept for environments where the shell orchestration is
+# preferred (e.g. slotting into an existing find/xargs workflow).
+#
 # usage: batch.sh [-j N] [-o OUTDIR] [-s] [--] SRC [SRC...]
 #   -j N       parallel jobs (default 2 — each job needs ~1.5 GB RAM at 20 MP)
 #   -o OUTDIR  write outputs here (default: next to the JPEG, as <base>_uhdr.jpg)
@@ -55,7 +59,7 @@ xargs -0 -P "$JOBS" -I{} bash -c '
   IFS=$'"'"'\t'"'"' read -r arw jpg <<< "{}"
   name="$(basename "${jpg%.*}")"
   out="${OUTDIR:+$OUTDIR/}${name}_uhdr.jpg"
-  if "$BIN" $SKIP ${EXTRA:-} -o "$out" "$arw" "$jpg" >/dev/null 2>/tmp/batch_err_$$; then
+  if "$BIN" convert $SKIP ${EXTRA:-} -o "$out" "$arw" "$jpg" >/dev/null 2>/tmp/batch_err_$$; then
     echo "OK    $name -> $out"
   else
     code=$?
