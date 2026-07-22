@@ -64,9 +64,9 @@ arw2uhdr batch -j 2 -o out/ ~/Photos          # parallel batch
 arw2uhdr extract-gainmap --lift photo_uhdr.jpg  # pull out the gain map, brightened to view
 ```
 
-`extract-gainmap` writes the embedded gain-map image to `<input>_gainmap.jpg` (or `-o`). The raw
-gain map is near-black (its values are log-encoded gains); pass `--lift` to gamma-brighten it into a
-viewable `.png`.
+`extract-gainmap` writes the embedded gain-map image to `<input>_gainmap.jpg` (or `-o`), rotated to
+match the base's EXIF orientation so a portrait map comes out upright. The raw gain map is near-black
+(its values are log-encoded gains); pass `--lift` to gamma-brighten it into a viewable `.png`.
 
 Key `convert` / `batch` flags:
 
